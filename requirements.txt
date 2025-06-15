@@ -9,3 +9,4 @@ Flask==3.0.3
 gunicorn==22.0.0
 setuptools==69.5.1
 urllib3==1.26.18
+yahoofinancials==1.20
