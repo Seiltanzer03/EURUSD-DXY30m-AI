@@ -7,6 +7,10 @@ import yfinance as yf
 import telegram
 from flask import Flask, request
 import asyncio
+import io
+import sys
+import contextlib
+from backtest import run_backtest
 
 # --- 1. Конфигурация и Инициализация ---
 app = Flask(__name__)
@@ -137,6 +141,11 @@ def webhook():
     chat_id = update.message.chat.id
     text = update.message.text
 
+    try:
+        admin_chat_id = int(TELEGRAM_CHAT_ID)
+    except (ValueError, TypeError):
+        admin_chat_id = None
+
     if text == '/start':
         bot.send_message(chat_id, "Добро пожаловать! Этот бот присылает торговые сигналы по стратегии SMC+AI. Используйте /subscribe для подписки и /unsubscribe для отписки.")
     elif text == '/subscribe':
@@ -149,6 +158,47 @@ def webhook():
             bot.send_message(chat_id, "Вы успешно отписались от сигналов.")
         else:
             bot.send_message(chat_id, "Вы не были подписаны.")
+    elif text == '/runbacktest':
+        if admin_chat_id and chat_id == admin_chat_id:
+            bot.send_message(chat_id, "✅ Принято! Запускаю бектест с визуализацией... Это может занять несколько минут.")
+            
+            log_stream = io.StringIO()
+            image_buffers = []
+            results_log = ""
+            
+            try:
+                # Перехватываем текстовый вывод (print) из run_backtest
+                with contextlib.redirect_stdout(log_stream):
+                    image_buffers = run_backtest() # Теперь функция возвращает буферы с картинками
+                results_log = log_stream.getvalue()
+            except Exception as e:
+                results_log = f"Произошла критическая ошибка при выполнении бектеста:\\n{e}"
+            
+            if not results_log:
+                results_log = "Бектест завершился без текстового вывода."
+
+            # Отправляем текстовый лог
+            max_length = 4000
+            for i in range(0, len(results_log), max_length):
+                chunk = results_log[i:i + max_length]
+                bot.send_message(chat_id, f"<pre>{chunk}</pre>", parse_mode='HTML')
+            
+            # Отправляем графики
+            if image_buffers:
+                bot.send_message(chat_id, f"Отправляю {len(image_buffers)} графика(ов) найденных сигналов...")
+                for img_buf in image_buffers:
+                    try:
+                        # Важно! Перемещаем курсор в начало буфера перед отправкой
+                        img_buf.seek(0)
+                        bot.send_photo(chat_id, photo=img_buf)
+                    except Exception as e:
+                        bot.send_message(chat_id, f"Не удалось отправить график: {e}")
+            elif "СИГНАЛ СГЕНЕРИРОВАН" in results_log:
+                 bot.send_message(chat_id, "Сигналы были найдены, но не удалось создать графики.")
+
+        else:
+            bot.send_message(chat_id, "⛔️ У вас нет прав для выполнения этой команды.")
+            
     return 'ok'
 
 @app.route('/check', methods=['GET'])
