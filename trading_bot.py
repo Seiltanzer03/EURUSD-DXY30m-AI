@@ -10,6 +10,16 @@ import asyncio
 from datetime import datetime, timedelta
 import pytz
 
+# Новые импорты для альтернативных источников
+try:
+    import FinanceDataReader as fdr
+except ImportError:
+    fdr = None
+try:
+    import efinance as ef
+except ImportError:
+    ef = None
+
 # --- 1. Конфигурация и Инициализация ---
 app = Flask(__name__)
 
@@ -68,90 +78,149 @@ def save_signal(signal_data):
     with open(SIGNALS_HISTORY_FILE, 'w') as f:
         json.dump(history, f)
 
-# --- 4. Основная логика стратегии ---
-def get_live_data():
-    """'Пуленепробиваемая' загрузка данных."""
-    print("Загрузка свежих данных...")
+# --- 4. Универсальная загрузка данных ---
+def try_yfinance(ticker, **kwargs):
     try:
-        eurusd_data = yf.download(tickers='EURUSD=X', period='5d', interval='30m')
-        if eurusd_data.empty:
-            print("Рынок EUR/USD закрыт или данные недоступны.")
-            return None
-            
-        dxy_data = yf.download(tickers='DX-Y.NYB', period='5d', interval='30m')
-        if dxy_data.empty:
-            print("Рынок DXY закрыт или данные недоступны.")
-            return None
-
-        eurusd_data.reset_index(inplace=True)
-        dxy_data.reset_index(inplace=True)
-
-        date_col = next(col for col in ['Datetime', 'Date', 'index'] if col in eurusd_data.columns)
-        eurusd_data.rename(columns={date_col: 'Datetime'}, inplace=True)
-        date_col = next(col for col in ['Datetime', 'Date', 'index'] if col in dxy_data.columns)
-        dxy_data.rename(columns={date_col: 'Datetime'}, inplace=True)
-        
-        eurusd_data.ta.rsi(length=14, append=True)
-        eurusd_data.ta.macd(fast=12, slow=26, signal=9, append=True)
-        eurusd_data.ta.atr(length=14, append=True)
-        eurusd_data.rename(columns={'RSI_14':'RSI', 'MACD_12_26_9':'MACD', 'MACDh_12_26_9':'MACD_hist', 'MACDs_12_26_9':'MACD_signal', 'ATRr_14':'ATR'}, inplace=True)
-        
-        eurusd_data.set_index('Datetime', inplace=True)
-        dxy_data.set_index('Datetime', inplace=True)
-        
-        dxy_data_renamed = dxy_data.rename(columns={'Low': 'DXY_Low'})
-        data = pd.concat([eurusd_data, dxy_data_renamed['DXY_Low']], axis=1)
-        data.dropna(inplace=True)
-        
-        print("Данные успешно обработаны.")
-        return data
+        data = yf.download(ticker, **kwargs)
+        if not data.empty:
+            return data, 'yfinance'
     except Exception as e:
-        print(f"Критическая ошибка при загрузке данных: {e}")
+        print(f"yfinance error: {e}")
+    return None, None
+
+def try_fdr(ticker, start=None, end=None):
+    if fdr is None:
+        return None, None
+    try:
+        # FDR поддерживает только дневные данные для валют
+        if ticker == 'EURUSD=X':
+            data = fdr.DataReader('EUR/USD', start, end)
+        elif ticker == 'DX-Y.NYB':
+            data = fdr.DataReader('DXY', start, end)
+        else:
+            return None, None
+        if not data.empty:
+            return data, 'FinanceDataReader'
+    except Exception as e:
+        print(f"FDR error: {e}")
+    return None, None
+
+def try_efinance(ticker, start=None, end=None):
+    if ef is None:
+        return None, None
+    try:
+        # efinance поддерживает только дневные данные для валют
+        if ticker == 'EURUSD=X':
+            data = ef.currency.get_quote_history('EURUSD', beg=start, end=end, klt=24)
+        elif ticker == 'DX-Y.NYB':
+            data = ef.currency.get_quote_history('USDIDX', beg=start, end=end, klt=24)
+        else:
+            return None, None
+        if not data.empty:
+            return data, 'efinance'
+    except Exception as e:
+        print(f"efinance error: {e}")
+    return None, None
+
+def try_csv(ticker):
+    try:
+        if ticker == 'EURUSD=X':
+            data = pd.read_csv('eurusd_data_2y.csv', parse_dates=[0], dayfirst=True)
+        elif ticker == 'DX-Y.NYB':
+            data = pd.read_csv('dxy_data_2y.csv', parse_dates=[0], dayfirst=True)
+        else:
+            return None, None
+        if not data.empty:
+            return data, 'csv'
+    except Exception as e:
+        print(f"csv error: {e}")
+    return None, None
+
+def get_data_universal(ticker, period=None, interval=None, start=None, end=None):
+    # 1. yfinance (только если есть интервал)
+    if interval:
+        data, src = try_yfinance(ticker, period=period, interval=interval) if period else try_yfinance(ticker, start=start, end=end, interval=interval)
+        if data is not None:
+            return data, src
+    # 2. FDR (только дневные)
+    data, src = try_fdr(ticker, start, end)
+    if data is not None:
+        return data, src
+    # 3. efinance (только дневные)
+    data, src = try_efinance(ticker, start, end)
+    if data is not None:
+        return data, src
+    # 4. CSV (локальный)
+    data, src = try_csv(ticker)
+    if data is not None:
+        return data, src
+    return None, None
+
+# --- 5. Основная логика стратегии ---
+def get_live_data():
+    print("Загрузка свежих данных...")
+    eurusd_data, src1 = get_data_universal('EURUSD=X', period='5d', interval='30m')
+    if eurusd_data is None:
+        print("Рынок EUR/USD закрыт или данные недоступны.")
         return None
+    dxy_data, src2 = get_data_universal('DX-Y.NYB', period='5d', interval='30m')
+    if dxy_data is None:
+        print("Рынок DXY закрыт или данные недоступны.")
+        return None
+    # Приведение к нужному формату (универсально)
+    eurusd_data = eurusd_data.copy()
+    dxy_data = dxy_data.copy()
+    if 'Datetime' not in eurusd_data.columns:
+        eurusd_data.reset_index(inplace=True)
+        date_col = next(col for col in ['Datetime', 'Date', 'index', 'Time'] if col in eurusd_data.columns)
+        eurusd_data.rename(columns={date_col: 'Datetime'}, inplace=True)
+    if 'Datetime' not in dxy_data.columns:
+        dxy_data.reset_index(inplace=True)
+        date_col = next(col for col in ['Datetime', 'Date', 'index', 'Time'] if col in dxy_data.columns)
+        dxy_data.rename(columns={date_col: 'Datetime'}, inplace=True)
+    eurusd_data.ta.rsi(length=14, append=True)
+    eurusd_data.ta.macd(fast=12, slow=26, signal=9, append=True)
+    eurusd_data.ta.atr(length=14, append=True)
+    eurusd_data.rename(columns={'RSI_14':'RSI', 'MACD_12_26_9':'MACD', 'MACDh_12_26_9':'MACD_hist', 'MACDs_12_26_9':'MACD_signal', 'ATRr_14':'ATR'}, inplace=True)
+    eurusd_data.set_index('Datetime', inplace=True)
+    dxy_data.set_index('Datetime', inplace=True)
+    dxy_data_renamed = dxy_data.rename(columns={'Low': 'DXY_Low'})
+    data = pd.concat([eurusd_data, dxy_data_renamed['DXY_Low']], axis=1)
+    data.dropna(inplace=True)
+    print(f"Данные успешно обработаны. Источник EURUSD: {src1}, DXY: {src2}")
+    return data
 
 def get_historical_data(start_date, end_date=None):
-    """Загрузка исторических данных для бэктестинга."""
     print(f"Загрузка исторических данных с {start_date} по {end_date or 'сегодня'}...")
-    try:
-        # Если конечная дата не указана, используем текущую
-        if end_date is None:
-            end_date = datetime.now().strftime('%Y-%m-%d')
-            
-        eurusd_data = yf.download(tickers='EURUSD=X', start=start_date, end=end_date, interval='30m')
-        if eurusd_data.empty:
-            print("Данные EUR/USD недоступны.")
-            return None
-            
-        dxy_data = yf.download(tickers='DX-Y.NYB', start=start_date, end=end_date, interval='30m')
-        if dxy_data.empty:
-            print("Данные DXY недоступны.")
-            return None
-
-        eurusd_data.reset_index(inplace=True)
-        dxy_data.reset_index(inplace=True)
-
-        date_col = next(col for col in ['Datetime', 'Date', 'index'] if col in eurusd_data.columns)
-        eurusd_data.rename(columns={date_col: 'Datetime'}, inplace=True)
-        date_col = next(col for col in ['Datetime', 'Date', 'index'] if col in dxy_data.columns)
-        dxy_data.rename(columns={date_col: 'Datetime'}, inplace=True)
-        
-        eurusd_data.ta.rsi(length=14, append=True)
-        eurusd_data.ta.macd(fast=12, slow=26, signal=9, append=True)
-        eurusd_data.ta.atr(length=14, append=True)
-        eurusd_data.rename(columns={'RSI_14':'RSI', 'MACD_12_26_9':'MACD', 'MACDh_12_26_9':'MACD_hist', 'MACDs_12_26_9':'MACD_signal', 'ATRr_14':'ATR'}, inplace=True)
-        
-        eurusd_data.set_index('Datetime', inplace=True)
-        dxy_data.set_index('Datetime', inplace=True)
-        
-        dxy_data_renamed = dxy_data.rename(columns={'Low': 'DXY_Low'})
-        data = pd.concat([eurusd_data, dxy_data_renamed['DXY_Low']], axis=1)
-        data.dropna(inplace=True)
-        
-        print(f"Исторические данные успешно обработаны. Получено {len(data)} свечей.")
-        return data
-    except Exception as e:
-        print(f"Ошибка при загрузке исторических данных: {e}")
+    eurusd_data, src1 = get_data_universal('EURUSD=X', start=start_date, end=end_date, interval='30m')
+    if eurusd_data is None:
+        print("Данные EUR/USD недоступны.")
         return None
+    dxy_data, src2 = get_data_universal('DX-Y.NYB', start=start_date, end=end_date, interval='30m')
+    if dxy_data is None:
+        print("Данные DXY недоступны.")
+        return None
+    eurusd_data = eurusd_data.copy()
+    dxy_data = dxy_data.copy()
+    if 'Datetime' not in eurusd_data.columns:
+        eurusd_data.reset_index(inplace=True)
+        date_col = next(col for col in ['Datetime', 'Date', 'index', 'Time'] if col in eurusd_data.columns)
+        eurusd_data.rename(columns={date_col: 'Datetime'}, inplace=True)
+    if 'Datetime' not in dxy_data.columns:
+        dxy_data.reset_index(inplace=True)
+        date_col = next(col for col in ['Datetime', 'Date', 'index', 'Time'] if col in dxy_data.columns)
+        dxy_data.rename(columns={date_col: 'Datetime'}, inplace=True)
+    eurusd_data.ta.rsi(length=14, append=True)
+    eurusd_data.ta.macd(fast=12, slow=26, signal=9, append=True)
+    eurusd_data.ta.atr(length=14, append=True)
+    eurusd_data.rename(columns={'RSI_14':'RSI', 'MACD_12_26_9':'MACD', 'MACDh_12_26_9':'MACD_hist', 'MACDs_12_26_9':'MACD_signal', 'ATRr_14':'ATR'}, inplace=True)
+    eurusd_data.set_index('Datetime', inplace=True)
+    dxy_data.set_index('Datetime', inplace=True)
+    dxy_data_renamed = dxy_data.rename(columns={'Low': 'DXY_Low'})
+    data = pd.concat([eurusd_data, dxy_data_renamed['DXY_Low']], axis=1)
+    data.dropna(inplace=True)
+    print(f"Исторические данные успешно обработаны. Источник EURUSD: {src1}, DXY: {src2}")
+    return data
 
 def check_for_signal(data=None, candle_index=-2, save_to_history=True):
     """Проверяет сигнал и возвращает сообщение или None."""
@@ -286,6 +355,34 @@ def get_statistics():
     
     return report
 
+# --- 7. Новые команды для теста источников и сигнала ---
+@app.route('/source_test', methods=['GET'])
+def source_test_route():
+    results = {}
+    for ticker in ['EURUSD=X', 'DX-Y.NYB']:
+        for src in ['yfinance', 'FinanceDataReader', 'efinance', 'csv']:
+            if src == 'yfinance':
+                data, _ = try_yfinance(ticker, period='5d', interval='30m')
+            elif src == 'FinanceDataReader':
+                data, _ = try_fdr(ticker, start=(datetime.now()-timedelta(days=5)).strftime('%Y-%m-%d'), end=datetime.now().strftime('%Y-%m-%d'))
+            elif src == 'efinance':
+                data, _ = try_efinance(ticker, start=(datetime.now()-timedelta(days=5)).strftime('%Y-%m-%d'), end=datetime.now().strftime('%Y-%m-%d'))
+            elif src == 'csv':
+                data, _ = try_csv(ticker)
+            else:
+                data = None
+            results[f'{ticker}_{src}'] = 'OK' if data is not None else 'FAIL'
+    return json.dumps(results, ensure_ascii=False)
+
+@app.route('/force_signal', methods=['GET'])
+def force_signal_route():
+    # Принудительно сгенерировать тестовый сигнал (если возможно)
+    data = get_live_data()
+    if data is None:
+        return 'Нет данных для генерации сигнала.'
+    result = check_for_signal(data, candle_index=-2, save_to_history=False)
+    return result
+
 # --- 5. Веб-сервер и Роуты ---
 @app.route('/webhook', methods=['POST'])
 def webhook():
@@ -322,6 +419,12 @@ def webhook():
             bot.send_message(chat_id, result)
         except Exception as e:
             bot.send_message(chat_id, f"Ошибка при запуске бэктеста: {e}")
+    elif text == '/source_test':
+        results = source_test_route()
+        bot.send_message(chat_id, f'Результаты теста источников:\n{results}')
+    elif text == '/force_signal':
+        result = force_signal_route()
+        bot.send_message(chat_id, f'Тестовый сигнал:\n{result}')
     return 'ok'
 
 @app.route('/check', methods=['GET'])
