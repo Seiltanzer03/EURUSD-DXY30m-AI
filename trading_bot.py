@@ -7,9 +7,15 @@ import yfinance as yf
 import telegram
 from flask import Flask, request
 from datetime import datetime, timedelta
+import requests
 
 # --- 1. Конфигурация и Инициализация ---
 app = Flask(__name__)
+
+# --- Глобальная сессия для yfinance ---
+# Создаем сессию с User-Agent, чтобы yfinance не блокировали
+yf_session = requests.Session()
+yf_session.headers['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
 
 # Загрузка секретов из переменных окружения
 TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
@@ -89,8 +95,8 @@ def get_data(end_date=None):
     """
     print(f"Загрузка данных. Режим: {'Исторический' if end_date else 'Live'}")
     try:
-        eurusd_ticker = yf.Ticker('EURUSD=X')
-        dxy_ticker = yf.Ticker('DX-Y.NYB')
+        eurusd_ticker = yf.Ticker('EURUSD=X', session=yf_session)
+        dxy_ticker = yf.Ticker('DX-Y.NYB', session=yf_session)
 
         if end_date:
             end_dt = datetime.strptime(end_date, '%Y-%m-%d')
