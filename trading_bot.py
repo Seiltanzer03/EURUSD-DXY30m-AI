@@ -10,6 +10,11 @@ from datetime import datetime, timedelta
 import yfinance as yf
 import requests
 import threading
+# --- добавлено для Twelve Data ---
+try:
+    from twelvedata import TDClient
+except ImportError:
+    TDClient = None
 
 # --- 1. Конфигурация и Инициализация ---
 app = Flask(__name__)
@@ -21,6 +26,7 @@ yf_session.headers['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Ap
 # Загрузка секретов из переменных окружения
 TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
 TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID') # ID администратора для отладки
+TWELVEDATA_API_KEY = os.environ.get('TWELVEDATA_API_KEY')
 bot = telegram.Bot(token=TELEGRAM_BOT_TOKEN)
 
 # Настройки стратегии
@@ -88,15 +94,57 @@ def get_stats():
     return report
 
 # --- 3. Основная логика стратегии ---
+def get_data_twelvedata(end_date=None):
+    if not TDClient or not TWELVEDATA_API_KEY:
+        return None
+    try:
+        td = TDClient(apikey=TWELVEDATA_API_KEY)
+        if end_date:
+            end_dt = datetime.strptime(end_date, '%Y-%m-%d')
+            start_dt = end_dt - timedelta(days=10)
+            end_dt_inclusive = end_dt + timedelta(days=1)
+            start_str = start_dt.strftime('%Y-%m-%d')
+            end_str = end_dt_inclusive.strftime('%Y-%m-%d')
+        else:
+            # Для live — последние 5 дней
+            end_dt = datetime.utcnow()
+            start_dt = end_dt - timedelta(days=5)
+            start_str = start_dt.strftime('%Y-%m-%d')
+            end_str = end_dt.strftime('%Y-%m-%d')
+        eurusd_ts = td.time_series(symbol="EUR/USD", interval="30min", start_date=start_str, end_date=end_str, outputsize=5000, timezone="UTC")
+        dxy_ts = td.time_series(symbol="DXY", interval="30min", start_date=start_str, end_date=end_str, outputsize=5000, timezone="UTC")
+        eurusd_data = eurusd_ts.as_pandas()
+        dxy_data = dxy_ts.as_pandas()
+        if eurusd_data is None or dxy_data is None or eurusd_data.empty or dxy_data.empty:
+            print("Данные по одному из активов отсутствуют (Twelve Data).")
+            return None
+        eurusd_data = eurusd_data.reset_index().rename(columns={eurusd_data.index.name or 'datetime': 'Datetime'})
+        dxy_data = dxy_data.reset_index().rename(columns={dxy_data.index.name or 'datetime': 'Datetime'})
+        eurusd_data.ta.rsi(length=14, append=True)
+        eurusd_data.ta.macd(fast=12, slow=26, signal=9, append=True)
+        eurusd_data.ta.atr(length=14, append=True)
+        eurusd_data.rename(columns={'RSI_14':'RSI', 'MACD_12_26_9':'MACD', 'MACDh_12_26_9':'MACD_hist', 'MACDs_12_26_9':'MACD_signal', 'ATRr_14':'ATR'}, inplace=True)
+        eurusd_data.set_index('Datetime', inplace=True)
+        dxy_data.set_index('Datetime', inplace=True)
+        dxy_data_renamed = dxy_data.rename(columns={'low': 'DXY_Low', 'Low': 'DXY_Low'})
+        data = pd.concat([eurusd_data, dxy_data_renamed['DXY_Low']], axis=1)
+        data.dropna(inplace=True)
+        print("Данные успешно обработаны через Twelve Data.")
+        return data
+    except Exception as e:
+        print(f"Критическая ошибка в get_data_twelvedata: {e}")
+        return None
+
 def get_data(end_date=None):
-    """
-    Загружает и обрабатывает данные с помощью yfinance.
-    """
+    # Сначала пробуем через Twelve Data
+    data = get_data_twelvedata(end_date)
+    if data is not None:
+        return data
+    # Если не получилось — fallback на yfinance
     print(f"Загрузка данных yfinance. Режим: {'Исторический' if end_date else 'Live'}")
     try:
         eurusd_ticker = yf.Ticker('EURUSD=X', session=yf_session)
         dxy_ticker = yf.Ticker('DX-Y.NYB', session=yf_session)
-
         if end_date:
             end_dt = datetime.strptime(end_date, '%Y-%m-%d')
             start_dt = end_dt - timedelta(days=10)
@@ -106,34 +154,26 @@ def get_data(end_date=None):
         else:
             eurusd_data = eurusd_ticker.history(period='5d', interval='30m')
             dxy_data = dxy_ticker.history(period='5d', interval='30m')
-
         if eurusd_data.empty or dxy_data.empty:
             print("Данные по одному из активов отсутствуют.")
             return None
-
         eurusd_data.reset_index(inplace=True)
         dxy_data.reset_index(inplace=True)
-        
         date_col = next(col for col in eurusd_data.columns if 'date' in col.lower())
         eurusd_data.rename(columns={date_col: 'Datetime'}, inplace=True)
         date_col = next(col for col in dxy_data.columns if 'date' in col.lower())
         dxy_data.rename(columns={date_col: 'Datetime'}, inplace=True)
-        
         eurusd_data.ta.rsi(length=14, append=True)
         eurusd_data.ta.macd(fast=12, slow=26, signal=9, append=True)
         eurusd_data.ta.atr(length=14, append=True)
         eurusd_data.rename(columns={'RSI_14':'RSI', 'MACD_12_26_9':'MACD', 'MACDh_12_26_9':'MACD_hist', 'MACDs_12_26_9':'MACD_signal', 'ATRr_14':'ATR'}, inplace=True)
-        
         eurusd_data.set_index('Datetime', inplace=True)
         dxy_data.set_index('Datetime', inplace=True)
-        
         dxy_data_renamed = dxy_data.rename(columns={'Low': 'DXY_Low'})
         data = pd.concat([eurusd_data, dxy_data_renamed['DXY_Low']], axis=1)
-        
         data.dropna(inplace=True)
         print("Данные успешно обработаны через yfinance.")
         return data
-
     except Exception as e:
         print(f"Критическая ошибка в get_data: {e}")
         return None
