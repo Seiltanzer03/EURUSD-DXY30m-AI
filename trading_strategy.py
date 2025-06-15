@@ -6,40 +6,58 @@ from sklearn.model_selection import train_test_split
 import joblib
 import os
 import numpy as np
+import fmp_python as fmp
 
 # --- 1. Загрузка и подготовка данных ---
 
-def load_data_from_dukascopy_csv(filepath):
+def load_data_from_fmp(symbol, interval='30min'):
     """
-    Загружает и форматирует данные из CSV-файла, скачанного с Dukascopy.
+    Загружает исторические данные с Financial Modeling Prep.
     """
-    df = pd.read_csv(
-        filepath,
-        parse_dates=[0],
-        dayfirst=True # Указываем, что день идет первым в дате
-    )
-    df.rename(columns={df.columns[0]: 'Time'}, inplace=True)
-    df.set_index('Time', inplace=True)
-    df.index = df.index.tz_localize('UTC')
-    column_mapping = {
-        df.columns[0]: 'Open', df.columns[1]: 'High',
-        df.columns[2]: 'Low', df.columns[3]: 'Close',
-        df.columns[4]: 'Volume'
-    }
-    df.rename(columns=column_mapping, inplace=True)
-    df = df[['Open', 'High', 'Low', 'Close', 'Volume']]
-    return df
+    print(f"Загрузка данных для {symbol} с интервалом {interval}...")
+    api_key = os.getenv("FMP_API_KEY")
+    if not api_key:
+        raise ValueError("Необходимо установить переменную окружения FMP_API_KEY")
+    
+    try:
+        client = fmp.FMP(api_key=api_key, output_format='pandas')
+        df = client.get_historical_chart(interval, symbol)
+
+        if df.empty:
+            print(f"Не получено данных для {symbol}.")
+            return None
+
+        # FMP данные обычно в 'America/New_York'. Конвертируем в UTC.
+        if df.index.tz is None:
+            df.index = df.index.tz_localize('America/New_York')
+        df.index = df.index.tz_convert('UTC')
+
+        # Переименовываем колонки в стандартный вид
+        df.rename(columns={'open': 'Open', 'high': 'High', 'low': 'Low', 'close': 'Close', 'volume': 'Volume'}, inplace=True)
+
+        return df[['Open', 'High', 'Low', 'Close', 'Volume']]
+
+    except Exception as e:
+        print(f"Ошибка при загрузке данных с FMP для {symbol}: {e}")
+        return None
+
 
 print("Скрипт запущен")
 
 # --- Загрузка M30 данных ---
 try:
-    print("Загрузка 30-минутных данных...")
-    eurusd_data_m30 = load_data_from_dukascopy_csv('eurusd_data_2y.csv')
-    dxy_data_m30 = load_data_from_dukascopy_csv('dxy_data_2y.csv')
+    print("Загрузка 30-минутных данных с FMP...")
+    # Для DXY в FMP может использоваться тикер DX-Y.NYB или DXY
+    eurusd_data_m30 = load_data_from_fmp('EURUSD')
+    dxy_data_m30 = load_data_from_fmp('DXY')
+    
+    if eurusd_data_m30 is None or dxy_data_m30 is None:
+        print("\n!!! ОШИБКА: Не удалось загрузить данные с FMP. Проверьте API ключ и тикеры. !!!")
+        exit()
+
     print("30-минутные данные успешно загружены.")
-except FileNotFoundError:
-    print("\n!!! ОШИБКА: Файлы 30-минутных данных не найдены. !!!")
+except Exception as e:
+    print(f"\n!!! ОШИБКА: Произошла ошибка при загрузке данных: {e} !!!")
     exit()
 
 # --- Добавляем индикаторы для ML модели ---
