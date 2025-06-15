@@ -1,150 +1,171 @@
 import pandas as pd
 import pandas_ta as ta
 import joblib
-import yfinance as yf
 import numpy as np
 import time
 import io
+import os
 import matplotlib.pyplot as plt
+from alpha_vantage.foreignexchange import ForeignExchange
+from alpha_vantage.timeseries import TimeSeries
 
 # --- 1. Конфигурация ---
 MODEL_FILE = 'ml_model_final_fix.joblib'
 PREDICTION_THRESHOLD = 0.55
 LOOKBACK_PERIOD = 20
+# Загружаем ключ из переменных окружения
+ALPHA_VANTAGE_API_KEY = os.environ.get('ALPHA_VANTAGE_API_KEY')
 
 # --- 2. Функции ---
-def get_historical_data(period='2mo', interval='30m'):
-    """Загружает исторические данные за указанный период с повторными попытками."""
-    print(f"Загрузка данных за последние {period}...")
-    for attempt in range(3):
-        try:
-            eurusd_data = yf.download(tickers='EURUSD=X', period=period, interval=interval, progress=False)
-            if eurusd_data.empty:
-                raise ValueError("Данные по EUR/USD пустые.")
-            dxy_data = yf.download(tickers='DX-Y.NYB', period=period, interval=interval, progress=False)
-            if dxy_data.empty:
-                raise ValueError("Данные по DXY пустые.")
-            break
-        except Exception as e:
-            print(f"Попытка {attempt + 1} не удалась: {e}")
-            if attempt < 2:
-                print("Пауза 5 секунд перед следующей попыткой...")
-                time.sleep(5)
-            else:
-                print("Все попытки загрузки не удались.")
-                return None
+
+def get_historical_data_av(output_size='full'):
+    """Загружает исторические данные с помощью Alpha Vantage."""
+    print("Загрузка данных из Alpha Vantage...")
+    if not ALPHA_VANTAGE_API_KEY:
+        raise ValueError("API-ключ для Alpha Vantage не найден. Установите переменную окружения ALPHA_VANTAGE_API_KEY.")
+
+    try:
+        # --- Загрузка EUR/USD ---
+        print("Загрузка данных для EUR/USD...")
+        fx = ForeignExchange(key=ALPHA_VANTAGE_API_KEY, output_format='pandas')
+        eurusd_data, _ = fx.get_currency_exchange_intraday('EUR', 'USD', interval='30min', outputsize=output_size)
+        eurusd_data.rename(columns={
+            '1. open': 'Open',
+            '2. high': 'High',
+            '3. low': 'Low',
+            '4. close': 'Close'
+        }, inplace=True)
+        # Alpha Vantage не предоставляет объем для FX, создаем пустую колонку
+        eurusd_data['Volume'] = 0 
+        eurusd_data.index = pd.to_datetime(eurusd_data.index)
+        print(f"Загружено {len(eurusd_data)} записей для EUR/USD.")
+        
+        # Пауза между запросами, чтобы не превышать лимит API
+        time.sleep(15)
+
+        # --- Загрузка DXY ---
+        print("Загрузка данных для DXY...")
+        ts = TimeSeries(key=ALPHA_VANTAGE_API_KEY, output_format='pandas')
+        # Используем тикер 'DXY' - если не сработает, нужно будет искать замену
+        dxy_data, _ = ts.get_intraday(symbol='DXY', interval='30min', outputsize=output_size)
+        dxy_data.rename(columns={
+            '1. open': 'Open',
+            '2. high': 'High',
+            '3. low': 'Low',
+            '4. close': 'Close',
+            '5. volume': 'Volume'
+        }, inplace=True)
+        dxy_data.index = pd.to_datetime(dxy_data.index)
+        print(f"Загружено {len(dxy_data)} записей для DXY.")
+
+        return eurusd_data, dxy_data
+
+    except Exception as e:
+        print(f"Ошибка при загрузке данных из Alpha Vantage: {e}")
+        # Проверим, содержит ли ошибка 'Invalid API call' - это может значить, что DXY не поддерживается
+        if 'Invalid API call' in str(e):
+            print("Похоже, тикер 'DXY' не поддерживается в Intraday. Попробуйте найти альтернативный тикер.")
+        return None, None
+
+
+def create_plot(data, signal_index, lookback_period):
+    """Создает график для визуализации найденного сигнала."""
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(15, 10), sharex=True)
     
-    eurusd_data.ta.rsi(length=14, append=True)
-    eurusd_data.ta.macd(fast=12, slow=26, signal=9, append=True)
-    eurusd_data.ta.atr(length=14, append=True)
-    eurusd_data.rename(columns={'RSI_14':'RSI', 'MACD_12_26_9':'MACD', 'MACDh_12_26_9':'MACD_hist', 'MACDs_12_26_9':'MACD_signal', 'ATRr_14':'ATR'}, inplace=True)
-    dxy_data_renamed = dxy_data.rename(columns={'Low': 'DXY_Low'})
-    data = pd.merge(eurusd_data, dxy_data_renamed['DXY_Low'], left_index=True, right_index=True, how='inner')
-    data.dropna(inplace=True)
-    print("Данные успешно загружены и обработаны.")
-    return data
+    start_index = signal_index - lookback_period
+    end_index = signal_index + 1
+    plot_data = data.iloc[start_index:end_index]
 
-def plot_signal(data_window, signal_index_in_window, lookback_period, win_prob):
-    """Создает график для найденного сигнала и возвращает его как buffer."""
-    plt.style.use('dark_background')
-    fig, ax1 = plt.subplots(figsize=(15, 8))
+    # График EUR/USD
+    ax1.plot(plot_data.index, plot_data['eurusd_Close'], label='EUR/USD Close', color='blue')
+    ax1.scatter(plot_data.index[lookback_period], plot_data['eurusd_Close'].iloc[lookback_period], color='red', s=100, zorder=5, label='Сигнальная свеча')
+    ax1.set_title('EUR/USD')
+    ax1.set_ylabel('Цена')
+    ax1.legend()
+    ax1.grid(True)
     
-    # EUR/USD
-    ax1.set_xlabel('Время', color='white')
-    ax1.set_ylabel('EUR/USD', color='cyan')
-    ax1.plot(data_window.index, data_window['Close'], color='cyan', label='EUR/USD Close')
-    ax1.tick_params(axis='y', labelcolor='cyan')
-    ax1.tick_params(axis='x', labelcolor='white')
+    # Закрашиваем область ретроспективы
+    ax1.axvspan(plot_data.index[0], plot_data.index[lookback_period], color='gray', alpha=0.2, label='Период ретроспективы')
 
-    # DXY
-    ax2 = ax1.twinx()
-    ax2.set_ylabel('DXY Low', color='lime')
-    ax2.plot(data_window.index, data_window['DXY_Low'], color='lime', label='DXY Low')
-    ax2.tick_params(axis='y', labelcolor='lime')
+    # График DXY
+    ax2.plot(plot_data.index, plot_data['dxy_Close'], label='DXY Close', color='green')
+    ax2.scatter(plot_data.index[lookback_period], plot_data['dxy_Close'].iloc[lookback_period], color='red', s=100, zorder=5)
+    ax2.set_title('DXY (Индекс доллара)')
+    ax2.set_xlabel('Дата и время')
+    ax2.set_ylabel('Цена')
+    ax2.legend()
+    ax2.grid(True)
+    ax2.axvspan(plot_data.index[0], plot_data.index[lookback_period], color='gray', alpha=0.2)
 
-    # Ретроспектива
-    lookback_start_time = data_window.index[signal_index_in_window - lookback_period]
-    lookback_end_time = data_window.index[signal_index_in_window - 1]
-    ax1.axvspan(lookback_start_time, lookback_end_time, color='orange', alpha=0.2, label='Период ретроспективы')
+    plt.xticks(rotation=45)
+    plt.tight_layout()
 
-    # Сигнальная свеча
-    signal_candle = data_window.iloc[signal_index_in_window]
-    ax1.scatter(signal_candle.name, signal_candle['High'], color='red', s=200, marker='v', zorder=5, label='Сигнал (Judas Swing)')
-    ax2.scatter(signal_candle.name, signal_candle['DXY_Low'], color='magenta', s=200, marker='^', zorder=5, label='Рейд DXY')
-
-    fig.suptitle(f'Сигнал на продажу EUR/USD @ {signal_candle.name.strftime("%Y-%m-%d %H:%M")}\nВероятность успеха: {win_prob:.2%}', fontsize=16, color='white')
-    fig.legend(loc='upper left', bbox_to_anchor=(0.05, 0.95))
-    fig.tight_layout(rect=[0, 0.05, 1, 0.95])
-    
+    # Сохраняем график в буфер
     buf = io.BytesIO()
-    plt.savefig(buf, format='PNG', facecolor=fig.get_facecolor())
-    plt.close(fig)
+    plt.savefig(buf, format='png')
     buf.seek(0)
+    plt.close(fig)
     return buf
 
+
 def run_backtest():
-    """Запускает бектест и возвращает список буферов с графиками."""
-    print("--- Начало бектеста ---")
-    try:
-        ml_model = joblib.load(MODEL_FILE)
-        print(f"Модель '{MODEL_FILE}' успешно загружена.")
-    except FileNotFoundError:
-        print(f"ОШИБКА: Файл модели {MODEL_FILE} не найден!")
-        return []
-
-    data = get_historical_data()
-    if data is None:
-        print("Не удалось получить данные, бектест прерван.")
-        return []
-
-    signals_found = 0
-    image_buffers = []
-    print(f"\nАнализ {len(data)} свечей. Период: {data.index[0]} по {data.index[-1]}")
-    print("--------------------------------------------------")
-
-    for i in range(LOOKBACK_PERIOD, len(data)):
-        current_candle = data.iloc[i]
-        
-        if not (13 <= current_candle.name.hour <= 17):
-            continue
-
-        start_index = i - LOOKBACK_PERIOD
-        end_index = i 
-        lookback_data = data.iloc[start_index:end_index]
-
-        eurusd_judas_swing = current_candle['High'] > lookback_data['High'].max()
-        dxy_raid = current_candle['DXY_Low'] < lookback_data['DXY_Low'].min()
-        
-        if eurusd_judas_swing and dxy_raid:
-            print(f"\nНайден потенциальный сетап в {current_candle.name}...")
-            features = [current_candle[col] for col in ['RSI', 'MACD', 'MACD_hist', 'MACD_signal', 'ATR']]
-            if np.isnan(features).any():
-                print("Пропуск: в данных для модели есть NaN значения.")
-                continue
-
-            win_prob = ml_model.predict_proba([features])[0][1]
-            print(f"Вероятность по модели: {win_prob:.2%}")
-
-            if win_prob >= PREDICTION_THRESHOLD:
-                signals_found += 1
-                print(">>> !!! СИГНАЛ СГЕНЕРИРОВАН !!! <<<")
-                print(f"  - Время (UTC): {current_candle.name}\n  - Вероятность успеха: {win_prob:.2%}\n")
-                
-                plot_start_index = max(0, i - LOOKBACK_PERIOD - 20)
-                plot_end_index = min(len(data), i + 20)
-                data_window = data.iloc[plot_start_index:plot_end_index]
-                signal_index_in_window = i - plot_start_index
-                
-                plot_buffer = plot_signal(data_window, signal_index_in_window, LOOKBACK_PERIOD, win_prob)
-                image_buffers.append(plot_buffer)
+    """Основная функция для запуска бектеста."""
+    print("--- Запуск бектеста ---")
     
-    print("\n--- Бекест завершен ---")
-    if signals_found > 0:
-        print(f"✅ Найдено сигналов: {signals_found}")
-    else:
-        print("❌ За последние 2 месяца сигналов, соответствующих критериям, не найдено.")
+    eurusd_data, dxy_data = get_historical_data_av(output_size='full')
+    
+    if eurusd_data is None or dxy_data is None:
+        print("Не удалось загрузить данные. Бектест прерван.")
+        return []
 
+    print("Объединение и обработка данных...")
+    data = pd.merge(eurusd_data, dxy_data, on='date', suffixes=('_eurusd', '_dxy'))
+    data.rename(columns={
+        'Open_eurusd': 'eurusd_Open', 'High_eurusd': 'eurusd_High', 'Low_eurusd': 'eurusd_Low', 'Close_eurusd': 'eurusd_Close', 'Volume_eurusd': 'eurusd_Volume',
+        'Open_dxy': 'dxy_Open', 'High_dxy': 'dxy_High', 'Low_dxy': 'dxy_Low', 'Close_dxy': 'dxy_Close', 'Volume_dxy': 'dxy_Volume'
+    }, inplace=True)
+    
+    print("Расчет технических индикаторов...")
+    data.ta.rsi(length=14, append=True, col_names=('EURUSD_RSI_14'))
+    data.ta.rsi(length=14, close=data['dxy_Close'], append=True, col_names=('DXY_RSI_14'))
+    
+    print("Загрузка модели...")
+    model = joblib.load(MODEL_FILE)
+    
+    image_buffers = []
+    print("\n--- Поиск сигналов ---")
+    
+    for i in range(LOOKBACK_PERIOD, len(data)):
+        segment = data.iloc[i-LOOKBACK_PERIOD:i]
+        
+        input_features = np.array([
+            segment['EURUSD_RSI_14'].values,
+            segment['DXY_RSI_14'].values
+        ]).flatten().reshape(1, -1)
+        
+        try:
+            prediction = model.predict_proba(input_features)[0][1]
+            
+            if prediction > PREDICTION_THRESHOLD:
+                signal_time = data.index[i]
+                print(f"🔥 Найден потенциальный сигнал!")
+                print(f"   - Время: {signal_time}")
+                print(f"   - Вероятность: {prediction:.2f}")
+                
+                plot_buffer = create_plot(data, i, LOOKBACK_PERIOD)
+                image_buffers.append(plot_buffer)
+
+        except Exception as e:
+            print(f"Ошибка при предсказании на сегменте {i}: {e}")
+            continue
+            
+    if not image_buffers:
+        print("\nЗавершено. Сигналов, удовлетворяющих условиям, не найдено.")
+    else:
+        print(f"\nЗавершено. Найдено сигналов: {len(image_buffers)}.")
+        
     return image_buffers
 
-if __name__ == "__main__":
+# Для возможности запуска файла напрямую
+if __name__ == '__main__':
     run_backtest() 
