@@ -106,27 +106,41 @@ def get_data_twelvedata(end_date=None):
             start_str = start_dt.strftime('%Y-%m-%d')
             end_str = end_dt_inclusive.strftime('%Y-%m-%d')
         else:
-            # Для live — последние 5 дней
             end_dt = datetime.utcnow()
             start_dt = end_dt - timedelta(days=5)
             start_str = start_dt.strftime('%Y-%m-%d')
             end_str = end_dt.strftime('%Y-%m-%d')
+        # EUR/USD — всегда доступен
         eurusd_ts = td.time_series(symbol="EUR/USD", interval="30min", start_date=start_str, end_date=end_str, outputsize=5000, timezone="UTC")
-        dxy_ts = td.time_series(symbol="DXY", interval="30min", start_date=start_str, end_date=end_str, outputsize=5000, timezone="UTC")
         eurusd_data = eurusd_ts.as_pandas()
-        dxy_data = dxy_ts.as_pandas()
-        if eurusd_data is None or dxy_data is None or eurusd_data.empty or dxy_data.empty:
-            print("Данные по одному из активов отсутствуют (Twelve Data).")
+        # DXY — индекс доллара, может быть недоступен на бесплатном тарифе. Пробуем, иначе fallback на UUP (ETF)
+        try:
+            dxy_ts = td.time_series(symbol="DXY", interval="30min", start_date=start_str, end_date=end_str, outputsize=5000, timezone="UTC")
+            dxy_data = dxy_ts.as_pandas()
+            if dxy_data is None or dxy_data.empty:
+                raise ValueError("DXY пустой")
+            dxy_data_renamed = dxy_data.reset_index().rename(columns={dxy_data.index.name or 'datetime': 'Datetime'})
+            dxy_data_renamed.set_index('Datetime', inplace=True)
+            dxy_data_renamed = dxy_data_renamed.rename(columns={'low': 'DXY_Low', 'Low': 'DXY_Low'})
+        except Exception:
+            # Fallback: используем ETF UUP (Invesco DB US Dollar Index Bullish Fund)
+            uup_ts = td.time_series(symbol="UUP", interval="30min", start_date=start_str, end_date=end_str, outputsize=5000, timezone="UTC")
+            uup_data = uup_ts.as_pandas()
+            if uup_data is None or uup_data.empty:
+                print("Данные по DXY и UUP отсутствуют (Twelve Data).")
+                return None
+            dxy_data_renamed = uup_data.reset_index().rename(columns={uup_data.index.name or 'datetime': 'Datetime'})
+            dxy_data_renamed.set_index('Datetime', inplace=True)
+            dxy_data_renamed = dxy_data_renamed.rename(columns={'low': 'DXY_Low', 'Low': 'DXY_Low'})
+        if eurusd_data is None or eurusd_data.empty:
+            print("Данные по EUR/USD отсутствуют (Twelve Data).")
             return None
         eurusd_data = eurusd_data.reset_index().rename(columns={eurusd_data.index.name or 'datetime': 'Datetime'})
-        dxy_data = dxy_data.reset_index().rename(columns={dxy_data.index.name or 'datetime': 'Datetime'})
         eurusd_data.ta.rsi(length=14, append=True)
         eurusd_data.ta.macd(fast=12, slow=26, signal=9, append=True)
         eurusd_data.ta.atr(length=14, append=True)
         eurusd_data.rename(columns={'RSI_14':'RSI', 'MACD_12_26_9':'MACD', 'MACDh_12_26_9':'MACD_hist', 'MACDs_12_26_9':'MACD_signal', 'ATRr_14':'ATR'}, inplace=True)
         eurusd_data.set_index('Datetime', inplace=True)
-        dxy_data.set_index('Datetime', inplace=True)
-        dxy_data_renamed = dxy_data.rename(columns={'low': 'DXY_Low', 'Low': 'DXY_Low'})
         data = pd.concat([eurusd_data, dxy_data_renamed['DXY_Low']], axis=1)
         data.dropna(inplace=True)
         print("Данные успешно обработаны через Twelve Data.")
