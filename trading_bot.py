@@ -4,6 +4,7 @@ import pandas as pd
 import pandas_ta as ta
 import joblib
 import yfinance as yf
+from yahoofinancials import YahooFinancials
 import telegram
 from flask import Flask, request
 from datetime import datetime, timedelta
@@ -89,83 +90,89 @@ def get_stats():
 # --- 3. Основная логика стратегии ---
 def get_data(end_date=None):
     """
-    Загружает и обрабатывает данные.
-    Если end_date is None, загружает 'живые' данные.
-    Если end_date - строка, загружает исторические данные до этой даты.
+    Загружает и обрабатывает данные с помощью yahoofinancials.
     """
-    print(f"Загрузка данных. Режим: {'Исторический' if end_date else 'Live'}")
+    print(f"Загрузка данных yahoofinancials. Режим: {'Исторический' if end_date else 'Live'}")
     try:
-        eurusd_ticker = yf.Ticker('EURUSD=X', session=yf_session)
-        dxy_ticker = yf.Ticker('DX-Y.NYB', session=yf_session)
+        tickers = ['EURUSD=X', 'DX-Y.NYB']
+        yahoo_financials = YahooFinancials(tickers)
 
         if end_date:
             end_dt = datetime.strptime(end_date, '%Y-%m-%d')
-            # yfinance 'end' is exclusive, so add a day to include the target date
-            start_dt = end_dt - timedelta(days=10)
+            start_dt = end_dt - timedelta(days=15) # Берем больше данных для надежности
             end_dt_inclusive = end_dt + timedelta(days=1)
-            eurusd_data = eurusd_ticker.history(start=start_dt, end=end_dt_inclusive, interval='30m')
-            dxy_data = dxy_ticker.history(start=start_dt, end=end_dt_inclusive, interval='30m')
+            
+            # Форматируем даты в строку 'YYYY-MM-DD'
+            start_str = start_dt.strftime('%Y-%m-%d')
+            end_str = end_dt_inclusive.strftime('%Y-%m-%d')
+            
+            hist_data = yahoo_financials.get_historical_price_data(start_str, end_str, 'daily')
         else:
-            # For live data, get the last 5 days
-            eurusd_data = eurusd_ticker.history(period='5d', interval='30m')
-            dxy_data = dxy_ticker.history(period='5d', interval='30m')
+            # Для live режима берем последние 15 дней
+            end_dt = datetime.utcnow()
+            start_dt = end_dt - timedelta(days=15)
+            start_str = start_dt.strftime('%Y-%m-%d')
+            end_str = end_dt.strftime('%Y-%m-%d')
+            hist_data = yahoo_financials.get_historical_price_data(start_str, end_str, 'daily')
 
-        if eurusd_data.empty or dxy_data.empty:
-            print("Данные по одному из активов отсутствуют.")
-            return None
+        if not hist_data.get('EURUSD=X') or not hist_data.get('DX-Y.NYB') or \
+           'prices' not in hist_data['EURUSD=X'] or 'prices' not in hist_data['DX-Y.NYB']:
+             print("Исторические данные не получены для одного из активов.")
+             return None
 
-        # .history() returns index as Datetime, so we reset it to match previous logic
-        eurusd_data.reset_index(inplace=True)
-        dxy_data.reset_index(inplace=True)
+        # Преобразуем данные в DataFrame
+        eurusd_df = pd.DataFrame(hist_data['EURUSD=X']['prices'])[['formatted_date', 'high', 'low', 'close']]
+        eurusd_df.rename(columns={'formatted_date': 'Date', 'high': 'High', 'low': 'Low', 'close': 'Close'}, inplace=True)
+        eurusd_df['Date'] = pd.to_datetime(eurusd_df['Date'])
+
+        dxy_df = pd.DataFrame(hist_data['DX-Y.NYB']['prices'])[['formatted_date', 'low']]
+        dxy_df.rename(columns={'formatted_date': 'Date', 'low': 'DXY_Low'}, inplace=True)
+        dxy_df['Date'] = pd.to_datetime(dxy_df['Date'])
+
+        # Объединяем данные по дате
+        data = pd.merge(eurusd_df, dxy_df, on='Date', how='inner')
+        data.set_index('Date', inplace=True)
+
+        # Добавляем технические индикаторы
+        data.ta.rsi(length=14, append=True)
+        data.ta.macd(fast=12, slow=26, signal=9, append=True)
+        data.ta.atr(length=14, append=True)
+        data.rename(columns={'RSI_14':'RSI', 'MACD_12_26_9':'MACD', 'MACDh_12_26_9':'MACD_hist', 'MACDs_12_26_9':'MACD_signal', 'ATRr_14':'ATR'}, inplace=True)
         
-        # Ensure column name is 'Datetime'
-        date_col = next(col for col in eurusd_data.columns if 'date' in col.lower())
-        eurusd_data.rename(columns={date_col: 'Datetime'}, inplace=True)
-        date_col = next(col for col in dxy_data.columns if 'date' in col.lower())
-        dxy_data.rename(columns={date_col: 'Datetime'}, inplace=True)
-        
-        eurusd_data.ta.rsi(length=14, append=True)
-        eurusd_data.ta.macd(fast=12, slow=26, signal=9, append=True)
-        eurusd_data.ta.atr(length=14, append=True)
-        eurusd_data.rename(columns={'RSI_14':'RSI', 'MACD_12_26_9':'MACD', 'MACDh_12_26_9':'MACD_hist', 'MACDs_12_26_9':'MACD_signal', 'ATRr_14':'ATR'}, inplace=True)
-        
-        eurusd_data.set_index('Datetime', inplace=True)
-        dxy_data.set_index('Datetime', inplace=True)
-        
-        dxy_data_renamed = dxy_data.rename(columns={'Low': 'DXY_Low'})
-        data = pd.concat([eurusd_data, dxy_data_renamed['DXY_Low']], axis=1)
         data.dropna(inplace=True)
-        
-        print("Данные успешно обработаны.")
+        print("Данные успешно обработаны через yahoofinancials.")
         return data
+
     except Exception as e:
-        print(f"Критическая ошибка при загрузке или обработке данных: {e}")
+        print(f"Критическая ошибка в get_data: {e}")
         return None
 
 def check_for_signal(end_date=None):
     """
-    Проверяет сигнал. Если end_date указан, работает в режиме бэктеста.
-    Возвращает кортеж (сообщение_для_пользователя, данные_для_лога) или (сообщение, None).
+    Проверяет сигнал. Временно без ML-модели.
     """
-    try:
-        ml_model = joblib.load(MODEL_FILE)
-    except FileNotFoundError:
-        return f"ОШИБКА: Файл модели {MODEL_FILE} не найден!", None
-
     data = get_data(end_date)
-    if data is None: 
+    if data is None or data.empty:
         return "Рынок закрыт или данные недоступны, проверка отменена.", None
 
-    # Для бэктеста мы проверяем все свечи за указанный день. Для live - только последнюю.
-    candles_to_check = data.iloc[-1:] if end_date is None else data[data.index.strftime('%Y-%m-%d') == end_date]
+    candles_to_check = data if end_date else data.tail(1)
+    
+    if end_date:
+        target_dt = datetime.strptime(end_date, '%Y-%m-%d').date()
+        candles_to_check = data[data.index.date == target_dt]
 
     if candles_to_check.empty:
-         return f"Нет данных для проверки за {end_date}.", None
+         return f"Нет данных для проверки за {end_date if end_date else 'сегодня'}.", None
+
+    # Временно убираем ML модель, чтобы проверить логику
+    # try:
+    #     ml_model = joblib.load(MODEL_FILE)
+    # except FileNotFoundError:
+    #     return f"ОШИБКА: Файл модели {MODEL_FILE} не найден!", None
 
     for i in range(len(candles_to_check)):
         last_candle = candles_to_check.iloc[i]
         
-        # Находим корректный срез данных для поиска Judas Swing
         try:
             candle_position = data.index.get_loc(last_candle.name)
             if candle_position < LOOKBACK_PERIOD: continue
@@ -174,29 +181,24 @@ def check_for_signal(end_date=None):
             print(f"Ошибка при срезе данных для свечи {last_candle.name}: {e}")
             continue
 
-        current_hour = last_candle.name.hour
-        if not (13 <= current_hour <= 17):
-            continue # Пропускаем свечи вне торгового времени
-
         eurusd_judas_swing = last_candle['High'] > lookback_data['High'].max()
         dxy_raid = last_candle['DXY_Low'] < lookback_data['DXY_Low'].min()
 
         if eurusd_judas_swing and dxy_raid:
-            features = [last_candle[col] for col in ['RSI', 'MACD', 'MACD_hist', 'MACD_signal', 'ATR']]
-            win_prob = ml_model.predict_proba([features])[0][1]
+            # Временно игнорируем модель
+            win_prob = 0.99 # Ставим заглушку
             
-            if win_prob >= PREDICTION_THRESHOLD:
-                signal_msg = (
-                    f"🚨 СИГНАЛ НА ПРОДАЖУ (SELL) EUR/USD 🚨\n\n"
-                    f"Вероятность успеха: *{win_prob:.2%}*\n"
-                    f"Время сетапа (UTC): `{last_candle.name}`"
-                )
-                signal_log_data = {
-                    "type": "Backtest" if end_date else "Live",
-                    "timestamp": last_candle.name.strftime('%Y-%m-%d %H:%M:%S'),
-                    "probability": win_prob
-                }
-                return signal_msg, signal_log_data
+            signal_msg = (
+                f"🚨 ТЕСТОВЫЙ СИГНАЛ (SELL) EUR/USD 🚨\n\n"
+                f"Паттерн найден, модель временно отключена.\n"
+                f"Время сетапа (UTC): `{last_candle.name.strftime('%Y-%m-%d')}`"
+            )
+            signal_log_data = {
+                "type": "Backtest-Pattern" if end_date else "Live-Pattern",
+                "timestamp": last_candle.name.strftime('%Y-%m-%d %H:%M:%S'),
+                "probability": win_prob
+            }
+            return signal_msg, signal_log_data
                 
     return "Активных сигналов нет.", None
 
