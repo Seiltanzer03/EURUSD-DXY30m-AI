@@ -89,24 +89,33 @@ def get_data(end_date=None):
     """
     print(f"Загрузка данных. Режим: {'Исторический' if end_date else 'Live'}")
     try:
+        eurusd_ticker = yf.Ticker('EURUSD=X')
+        dxy_ticker = yf.Ticker('DX-Y.NYB')
+
         if end_date:
             end_dt = datetime.strptime(end_date, '%Y-%m-%d')
+            # yfinance 'end' is exclusive, so add a day to include the target date
             start_dt = end_dt - timedelta(days=10)
-            eurusd_data = yf.download(tickers='EURUSD=X', start=start_dt, end=end_dt, interval='30m')
-            dxy_data = yf.download(tickers='DX-Y.NYB', start=start_dt, end=end_dt, interval='30m')
+            end_dt_inclusive = end_dt + timedelta(days=1)
+            eurusd_data = eurusd_ticker.history(start=start_dt, end=end_dt_inclusive, interval='30m')
+            dxy_data = dxy_ticker.history(start=start_dt, end=end_dt_inclusive, interval='30m')
         else:
-            eurusd_data = yf.download(tickers='EURUSD=X', period='5d', interval='30m')
-            dxy_data = yf.download(tickers='DX-Y.NYB', period='5d', interval='30m')
+            # For live data, get the last 5 days
+            eurusd_data = eurusd_ticker.history(period='5d', interval='30m')
+            dxy_data = dxy_ticker.history(period='5d', interval='30m')
 
         if eurusd_data.empty or dxy_data.empty:
             print("Данные по одному из активов отсутствуют.")
             return None
 
+        # .history() returns index as Datetime, so we reset it to match previous logic
         eurusd_data.reset_index(inplace=True)
         dxy_data.reset_index(inplace=True)
-        date_col = next(col for col in ['Datetime', 'Date', 'index'] if col in eurusd_data.columns)
+        
+        # Ensure column name is 'Datetime'
+        date_col = next(col for col in eurusd_data.columns if 'date' in col.lower())
         eurusd_data.rename(columns={date_col: 'Datetime'}, inplace=True)
-        date_col = next(col for col in ['Datetime', 'Date', 'index'] if col in dxy_data.columns)
+        date_col = next(col for col in dxy_data.columns if 'date' in col.lower())
         dxy_data.rename(columns={date_col: 'Datetime'}, inplace=True)
         
         eurusd_data.ta.rsi(length=14, append=True)
