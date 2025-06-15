@@ -11,6 +11,10 @@ import io
 import sys
 import contextlib
 from backtest import run_backtest
+from alpha_vantage.foreignexchange import ForeignExchange
+from alpha_vantage.timeseries import TimeSeries
+import time
+import numpy as np
 
 # --- 1. Конфигурация и Инициализация ---
 app = Flask(__name__)
@@ -18,6 +22,7 @@ app = Flask(__name__)
 # Загрузка секретов из переменных окружения
 TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
 TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID') # ID администратора для отладки
+ALPHA_VANTAGE_API_KEY = os.environ.get('ALPHA_VANTAGE_API_KEY') # Ключ для Alpha Vantage
 bot = telegram.Bot(token=TELEGRAM_BOT_TOKEN)
 
 # Настройки стратегии
@@ -96,42 +101,77 @@ def get_live_data():
         return None
 
 def check_for_signal():
-    """Проверяет сигнал и возвращает сообщение или None."""
+    """
+    Проверяет наличие торгового сигнала с использованием Alpha Vantage.
+    """
+    print("Начало проверки сигнала...")
+    if not ALPHA_VANTAGE_API_KEY:
+        print("Ошибка: API-ключ для Alpha Vantage не задан.")
+        return
+
     try:
-        ml_model = joblib.load(MODEL_FILE)
-    except FileNotFoundError:
-        return f"ОШИБКА: Файл модели {MODEL_FILE} не найден!"
-
-    data = get_live_data()
-    if data is None: return "Рынок закрыт, проверка отменена."
-
-    last_candle_time = data.index[-1].tz_convert('UTC')
-    if (pd.Timestamp.now(tz='UTC') - last_candle_time).total_seconds() > 3600 * 4:
-        return f"Данные старые (последняя свеча: {last_candle_time}), рынок закрыт."
-
-    last_candle = data.iloc[-2]
-    current_hour = last_candle.name.hour
-
-    if not (13 <= current_hour <= 17):
-        return f"Вне торгового времени (час UTC: {current_hour})."
-    
-    start_index = len(data) - LOOKBACK_PERIOD - 2
-    end_index = len(data) - 2
-    
-    eurusd_judas_swing = last_candle['High'] > data['High'].iloc[start_index:end_index].max()
-    dxy_raid = last_candle['DXY_Low'] < data['DXY_Low'].iloc[start_index:end_index].min()
-
-    if eurusd_judas_swing and dxy_raid:
-        features = [last_candle[col] for col in ['RSI', 'MACD', 'MACD_hist', 'MACD_signal', 'ATR']]
-        win_prob = ml_model.predict_proba([features])[0][1]
+        # --- Загрузка EUR/USD ---
+        fx = ForeignExchange(key=ALPHA_VANTAGE_API_KEY, output_format='pandas')
+        eurusd_data, _ = fx.get_currency_exchange_intraday('EUR', 'USD', interval='30min', outputsize='compact') # compact для скорости
+        eurusd_data.rename(columns={'1. open': 'Open', '2. high': 'High', '3. low': 'Low', '4. close': 'Close'}, inplace=True)
+        eurusd_data.index = pd.to_datetime(eurusd_data.index)
         
-        if win_prob >= PREDICTION_THRESHOLD:
-            return (
-                f"🚨 СИГНАЛ НА ПРОДАЖУ (SELL) EUR/USD 🚨\n\n"
-                f"Вероятность успеха: *{win_prob:.2%}*\n"
-                f"Время сетапа (UTC): `{last_candle.name}`"
-            )
-    return "Активных сигналов нет."
+        # Пауза
+        time.sleep(15)
+
+        # --- Загрузка DXY ---
+        ts = TimeSeries(key=ALPHA_VANTAGE_API_KEY, output_format='pandas')
+        dxy_data, _ = ts.get_intraday(symbol='DXY', interval='30min', outputsize='compact')
+        dxy_data.rename(columns={'1. open': 'Open', '2. high': 'High', '3. low': 'Low', '4. close': 'Close', '5. volume': 'Volume'}, inplace=True)
+        dxy_data.index = pd.to_datetime(dxy_data.index)
+        
+        # Объединение и обработка
+        data = pd.merge(eurusd_data, dxy_data, on='date', suffixes=('_eurusd', '_dxy'), how='inner')
+        # ... (дальнейший код аналогичен backtest.py, но работает с последними данными)
+
+        # Расчет индикаторов
+        data.ta.rsi(length=14, append=True, col_names=('EURUSD_RSI_14'))
+        data.ta.rsi(length=14, close=data['dxy_Close'], append=True, col_names=('DXY_RSI_14'))
+        data.dropna(inplace=True)
+
+        if len(data) < LOOKBACK_PERIOD + 1:
+            print("Недостаточно данных для анализа.")
+            return
+
+        # Берем последние данные для анализа
+        latest_segment = data.iloc[-(LOOKBACK_PERIOD+1):-1]
+        
+        input_features = np.array([
+            latest_segment['EURUSD_RSI_14'].values,
+            latest_segment['DXY_RSI_14'].values
+        ]).flatten().reshape(1, -1)
+
+        model = joblib.load(MODEL_FILE)
+        prediction = model.predict_proba(input_features)[0][1]
+        
+        print(f"Проверка завершена. Вероятность сигнала: {prediction:.2f}")
+
+        if prediction > PREDICTION_THRESHOLD:
+            message = f"🚨 ВНИМАНИЕ! Обнаружен торговый сигнал! 🚨\n\n" \
+                      f"Инструмент: EUR/USD\n" \
+                      f"Таймфрейм: 30 минут\n" \
+                      f"Вероятность отработки: {prediction:.2%}\n\n" \
+                      f"Рекомендуется проверить график и принять решение."
+            
+            # Рассылка подписчикам
+            subscribers = get_subscribers()
+            for chat_id in subscribers:
+                try:
+                    bot.send_message(chat_id, message)
+                except Exception as e:
+                    print(f"Не удалось отправить сообщение пользователю {chat_id}: {e}")
+
+    except Exception as e:
+        print(f"Ошибка при проверке сигнала: {e}")
+        # Отправка ошибки администратору для отладки
+        if TELEGRAM_CHAT_ID:
+            error_message = f"Произошла ошибка в `check_for_signal`:\n\n{e}"
+            bot.send_message(TELEGRAM_CHAT_ID, error_message)
 
 # --- 4. Веб-сервер и Роуты ---
 @app.route('/webhook', methods=['POST'])
@@ -201,24 +241,12 @@ def webhook():
             
     return 'ok'
 
-@app.route('/check', methods=['GET'])
-def check_route():
-    """Запускает проверку сигнала (для UptimeRobot)."""
-    print("Получен запрос на /check от планировщика.")
-    message = check_for_signal()
-    
-    if "СИГНАЛ НА ПРОДАЖУ" in message:
-        print(f"Найден сигнал, рассылаю подписчикам...")
-        subscribers = get_subscribers()
-        for sub_id in subscribers:
-            try:
-                bot.send_message(sub_id, message, parse_mode='Markdown')
-            except Exception as e:
-                print(f"Не удалось отправить сообщение подписчику {sub_id}: {e}")
-    else:
-        print(message) # Выводим в лог "Нет сигналов" или "Рынок закрыт"
-        
-    return message # Возвращаем статус для UptimeRobot
+@app.route('/check')
+def scheduled_check():
+    """Эндпоинт для UptimeRobot, запускает проверку сигнала."""
+    # Запускаем в фоновом режиме, чтобы не блокировать ответ
+    asyncio.run(asyncio.to_thread(check_for_signal))
+    return "Проверка сигнала запущена.", 200
 
 @app.route('/')
 def index():
