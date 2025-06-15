@@ -3,20 +3,13 @@ import json
 import pandas as pd
 import pandas_ta as ta
 import joblib
-import yfinance as yf
 from yahoofinancials import YahooFinancials
 import telegram
 from flask import Flask, request
 from datetime import datetime, timedelta
-import requests
 
 # --- 1. Конфигурация и Инициализация ---
 app = Flask(__name__)
-
-# --- Глобальная сессия для yfinance ---
-# Создаем сессию с User-Agent, чтобы yfinance не блокировали
-yf_session = requests.Session()
-yf_session.headers['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
 
 # Загрузка секретов из переменных окружения
 TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
