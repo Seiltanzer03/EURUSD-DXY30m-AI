@@ -8,8 +8,20 @@ import telegram
 from flask import Flask, request
 import asyncio
 from trading_strategy import run_backtest
+import threading
 
 # --- 1. Конфигурация и Инициализация ---
+
+# Создаем и запускаем event loop в отдельном потоке.
+# Это нужно, чтобы асинхронные задачи Telegram не блокировали синхронный Flask.
+def start_loop(loop):
+    asyncio.set_event_loop(loop)
+    loop.run_forever()
+
+background_loop = asyncio.new_event_loop()
+loop_thread = threading.Thread(target=start_loop, args=(background_loop,), daemon=True)
+loop_thread.start()
+
 app = Flask(__name__)
 
 # Загрузка секретов из переменных окружения
@@ -191,14 +203,12 @@ async def handle_update(update):
 # --- 4. Веб-сервер и Роуты ---
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    """Обрабатывает вебхуки от Telegram, запуская асинхронную обработку."""
+    """Обрабатывает вебхуки от Telegram, отправляя задачу в фоновый event loop."""
     update_data = request.get_json(force=True)
     update = telegram.Update.de_json(update_data, bot)
     
-    # Запускаем асинхронную обработку в существующем event loop
-    # Flask работает в одном потоке, asyncio - в другом.
-    # Это самый простой способ их связать без сложных библиотек.
-    asyncio.run(handle_update(update))
+    # Отправляем coroutine на выполнение в фоновый поток
+    asyncio.run_coroutine_threadsafe(handle_update(update), background_loop)
     
     return 'ok'
 
@@ -219,7 +229,8 @@ def check_route():
                 except Exception as e:
                     print(f"Не удалось отправить сообщение подписчику {sub_id}: {e}")
 
-        asyncio.run(send_signals())
+        # Отправляем coroutine на выполнение в фоновый поток
+        asyncio.run_coroutine_threadsafe(send_signals(), background_loop)
     else:
         print(message) # Выводим в лог "Нет сигналов" или "Рынок закрыт"
         
