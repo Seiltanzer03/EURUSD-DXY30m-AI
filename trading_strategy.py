@@ -80,12 +80,10 @@ class SMCStrategy(Strategy):
             self.signal_to_trade = 0
 
 def load_data_from_yfinance(ticker, period="2mo", interval="30m"):
-    """Загружает данные из Yahoo Finance с User-Agent."""
+    """Загружает данные из Yahoo Finance."""
     print(f"Загрузка {period} данных для {ticker}...")
-    session = requests.Session()
-    session.headers['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
     try:
-        df = yf.download(tickers=ticker, period=period, interval=interval, auto_adjust=True, session=session)
+        df = yf.download(tickers=ticker, period=period, interval=interval, auto_adjust=True)
         if df.empty:
             raise ValueError(f"Нет данных для {ticker}. Рынок может быть закрыт.")
         df.index = df.index.tz_convert('UTC')
