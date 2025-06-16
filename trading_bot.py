@@ -92,11 +92,17 @@ def get_live_data():
     print("Загрузка свежих данных...")
     try:
         eurusd_data = yf.download(tickers='EURUSD=X', period='5d', interval='30m')
+        if isinstance(eurusd_data.columns, pd.MultiIndex):
+            eurusd_data.columns = eurusd_data.columns.get_level_values(0)
+
         if eurusd_data.empty:
             print("Рынок EUR/USD закрыт или данные недоступны.")
             return None
             
         dxy_data = yf.download(tickers='DX-Y.NYB', period='5d', interval='30m')
+        if isinstance(dxy_data.columns, pd.MultiIndex):
+            dxy_data.columns = dxy_data.columns.get_level_values(0)
+
         if dxy_data.empty:
             print("Рынок DXY закрыт или данные недоступны.")
             return None
