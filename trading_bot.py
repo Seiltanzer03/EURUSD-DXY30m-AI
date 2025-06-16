@@ -19,18 +19,31 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 
+# Глобальные переменные для "ленивой" инициализации.
+# Они будут созданы только один раз для каждого рабочего процесса Gunicorn.
+_background_loop = None
+_loop_thread = None
+_thread_lock = threading.Lock()
+
+def get_background_loop():
+    """Лениво создает и запускает event loop в фоновом потоке."""
+    global _background_loop, _loop_thread
+    with _thread_lock:
+        if _loop_thread is None:
+            logging.info("Initializing background loop and thread for the first time in this worker...")
+            _background_loop = asyncio.new_event_loop()
+            
+            def start_loop(loop):
+                asyncio.set_event_loop(loop)
+                loop.run_forever()
+
+            _loop_thread = threading.Thread(target=start_loop, args=(_background_loop,), daemon=True)
+            _loop_thread.start()
+            logging.info("Background loop and thread have been started.")
+    return _background_loop
+
 # Хранилище для фоновых задач, чтобы их не удалил сборщик мусора
 background_tasks = set()
-
-# Создаем и запускаем event loop в отдельном потоке.
-# Это нужно, чтобы асинхронные задачи Telegram не блокировали синхронный Flask.
-def start_loop(loop):
-    asyncio.set_event_loop(loop)
-    loop.run_forever()
-
-background_loop = asyncio.new_event_loop()
-loop_thread = threading.Thread(target=start_loop, args=(background_loop,), daemon=True)
-loop_thread.start()
 
 app = Flask(__name__)
 
@@ -234,8 +247,11 @@ def webhook():
         logging.info(f"Webhook received: {update_data}")
         update = telegram.Update.de_json(update_data, bot)
         
+        # Получаем (или создаем) фоновый цикл
+        loop = get_background_loop()
+        
         # Отправляем coroutine на выполнение в фоновый поток (fire-and-forget)
-        asyncio.run_coroutine_threadsafe(handle_update(update), background_loop)
+        asyncio.run_coroutine_threadsafe(handle_update(update), loop)
         logging.info("handle_update task scheduled successfully.")
         
     except Exception:
@@ -261,7 +277,8 @@ def check_route():
                     print(f"Не удалось отправить сообщение подписчику {sub_id}: {e}")
 
         # Отправляем coroutine на выполнение в фоновый поток
-        asyncio.run_coroutine_threadsafe(send_signals(), background_loop)
+        loop = get_background_loop()
+        asyncio.run_coroutine_threadsafe(send_signals(), loop)
     else:
         print(message) # Выводим в лог "Нет сигналов" или "Рынок закрыт"
         
