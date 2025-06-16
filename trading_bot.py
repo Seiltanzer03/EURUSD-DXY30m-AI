@@ -8,7 +8,6 @@ import telegram
 from flask import Flask, request
 import asyncio
 from trading_strategy import run_backtest
-import threading
 
 # --- 1. Конфигурация и Инициализация ---
 app = Flask(__name__)
@@ -131,69 +130,76 @@ def check_for_signal():
             )
     return "Активных сигналов нет."
 
-def run_backtest_in_thread(chat_id, threshold):
-    """Функция для запуска бэктеста в отдельном потоке."""
+async def run_backtest_async(chat_id, threshold):
+    """Асинхронная функция для запуска бэктеста."""
     try:
         # 1. Уведомляем пользователя о начале
-        bot.send_message(chat_id, f"✅ Запускаю бэктест с фильтром {threshold}. Это может занять несколько минут...")
+        await bot.send_message(chat_id, f"✅ Запускаю бэктест с фильтром {threshold}. Это может занять несколько минут...")
         
-        # 2. Запускаем саму функцию бэктеста
-        stats, plot_file = run_backtest(threshold)
+        # 2. Запускаем ресурсоемкую функцию бэктеста в отдельном потоке, не блокируя event loop
+        stats, plot_file = await asyncio.to_thread(run_backtest, threshold)
         
         # 3. Отправляем результаты
         if plot_file:
             # Отправляем статистику
-            bot.send_message(chat_id, f"📊 Результаты бэктеста:\n\n<pre>{stats}</pre>", parse_mode='HTML')
+            await bot.send_message(chat_id, f"📊 Результаты бэктеста:\n\n<pre>{stats}</pre>", parse_mode='HTML')
             
             # Отправляем HTML-отчет
             with open(plot_file, 'rb') as f:
-                bot.send_document(chat_id, document=f, caption=f"Подробный отчет по бэктесту с фильтром {threshold}")
+                await bot.send_document(chat_id, document=f, caption=f"Подробный отчет по бэктесту с фильтром {threshold}")
             os.remove(plot_file) # Удаляем файл после отправки
         else:
             # Если бэктест не удался, stats содержит текст ошибки
-            bot.send_message(chat_id, f"❌ Ошибка во время бэктеста: {stats}")
+            await bot.send_message(chat_id, f"❌ Ошибка во время бэктеста: {stats}")
             
     except Exception as e:
-        bot.send_message(chat_id, f"❌ Критическая ошибка в потоке бэктеста: {e}")
+        await bot.send_message(chat_id, f"❌ Критическая ошибка в задаче бэктеста: {e}")
 
-# --- 4. Веб-сервер и Роуты ---
-@app.route('/webhook', methods=['POST'])
-def webhook():
-    """Обрабатывает команды от пользователей Telegram."""
-    update = telegram.Update.de_json(request.get_json(force=True), bot)
+async def handle_update(update):
+    """Асинхронно обрабатывает входящие сообщения."""
     if not update.message:
-        return 'ok'
+        return
 
     chat_id = update.message.chat.id
     text = update.message.text
 
     if text == '/start':
-        bot.send_message(chat_id, "Добро пожаловать! Этот бот присылает торговые сигналы по стратегии SMC+AI. Используйте /subscribe для подписки и /unsubscribe для отписки.")
+        await bot.send_message(chat_id, "Добро пожаловать! Этот бот присылает торговые сигналы по стратегии SMC+AI. Используйте /subscribe для подписки и /unsubscribe для отписки.")
     elif text == '/subscribe':
         if add_subscriber(chat_id):
-            bot.send_message(chat_id, "Вы успешно подписались на сигналы!")
+            await bot.send_message(chat_id, "Вы успешно подписались на сигналы!")
         else:
-            bot.send_message(chat_id, "Вы уже подписаны.")
+            await bot.send_message(chat_id, "Вы уже подписаны.")
     elif text == '/unsubscribe':
         if remove_subscriber(chat_id):
-            bot.send_message(chat_id, "Вы успешно отписались от сигналов.")
+            await bot.send_message(chat_id, "Вы успешно отписались от сигналов.")
         else:
-            bot.send_message(chat_id, "Вы не были подписаны.")
+            await bot.send_message(chat_id, "Вы не были подписаны.")
     elif text.startswith('/backtest'):
         try:
-            # Устанавливаем порог по умолчанию или берем из команды
-            threshold = 0.67 
+            threshold = 0.67
             parts = text.split()
             if len(parts) > 1:
                 threshold = float(parts[1])
             
-            # Запускаем бэктест в отдельном потоке, чтобы не блокировать бота
-            thread = threading.Thread(target=run_backtest_in_thread, args=(chat_id, threshold))
-            thread.start()
+            # Запускаем асинхронную задачу бэктеста и не ждем ее завершения
+            asyncio.create_task(run_backtest_async(chat_id, threshold))
             
         except (ValueError, IndexError):
-            bot.send_message(chat_id, "Неверный формат. Используйте: /backtest [уровень_фильтра], например: /backtest 0.67")
-        
+            await bot.send_message(chat_id, "Неверный формат. Используйте: /backtest [уровень_фильтра], например: /backtest 0.67")
+
+# --- 4. Веб-сервер и Роуты ---
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    """Обрабатывает вебхуки от Telegram, запуская асинхронную обработку."""
+    update_data = request.get_json(force=True)
+    update = telegram.Update.de_json(update_data, bot)
+    
+    # Запускаем асинхронную обработку в существующем event loop
+    # Flask работает в одном потоке, asyncio - в другом.
+    # Это самый простой способ их связать без сложных библиотек.
+    asyncio.run(handle_update(update))
+    
     return 'ok'
 
 @app.route('/check', methods=['GET'])
@@ -205,11 +211,15 @@ def check_route():
     if "СИГНАЛ НА ПРОДАЖУ" in message:
         print(f"Найден сигнал, рассылаю подписчикам...")
         subscribers = get_subscribers()
-        for sub_id in subscribers:
-            try:
-                bot.send_message(sub_id, message, parse_mode='Markdown')
-            except Exception as e:
-                print(f"Не удалось отправить сообщение подписчику {sub_id}: {e}")
+        
+        async def send_signals():
+            for sub_id in subscribers:
+                try:
+                    await bot.send_message(sub_id, message, parse_mode='Markdown')
+                except Exception as e:
+                    print(f"Не удалось отправить сообщение подписчику {sub_id}: {e}")
+
+        asyncio.run(send_signals())
     else:
         print(message) # Выводим в лог "Нет сигналов" или "Рынок закрыт"
         
