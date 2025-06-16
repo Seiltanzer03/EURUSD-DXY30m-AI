@@ -7,14 +7,8 @@ import yfinance as yf
 import telegram
 from flask import Flask, request
 import asyncio
-import io
-import sys
-import contextlib
-from backtest import run_backtest
-from alpha_vantage.foreignexchange import ForeignExchange
-from alpha_vantage.timeseries import TimeSeries
-import time
-import numpy as np
+import threading
+from trading_strategy import run_backtest
 
 # --- 1. Конфигурация и Инициализация ---
 app = Flask(__name__)
@@ -22,7 +16,6 @@ app = Flask(__name__)
 # Загрузка секретов из переменных окружения
 TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
 TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID') # ID администратора для отладки
-ALPHA_VANTAGE_API_KEY = os.environ.get('ALPHA_VANTAGE_API_KEY') # Ключ для Alpha Vantage
 bot = telegram.Bot(token=TELEGRAM_BOT_TOKEN)
 
 # Настройки стратегии
@@ -58,6 +51,27 @@ def remove_subscriber(chat_id):
             json.dump(subscribers, f)
         return True
     return False
+
+# --- НОВАЯ ФУНКЦИЯ ДЛЯ ЗАПУСКА БЭКТЕСТА В ПОТОКЕ ---
+def run_backtest_and_send(chat_id, threshold):
+    """Функция для запуска бэктеста в отдельном потоке и отправки результатов."""
+    try:
+        bot.send_message(chat_id, "▶️ Шаг 1/3: Загрузка 2-х летних данных из Yahoo Finance...")
+        
+        stats_str, plot_file = run_backtest(prediction_threshold=threshold)
+        
+        if plot_file and os.path.exists(plot_file):
+            bot.send_message(chat_id, "✅ Шаг 2/3: Бэктест завершен. Формирую отчет...")
+            bot.send_message(chat_id, f"<pre>\n{stats_str}\n</pre>", parse_mode='HTML')
+            with open(plot_file, 'rb') as photo:
+                bot.send_photo(chat_id, photo=photo, caption=f"График бэктеста для порога {threshold}")
+            os.remove(plot_file)
+            bot.send_message(chat_id, "🏁 Шаг 3/3: Готово!")
+        else:
+            bot.send_message(chat_id, f"❌ Не удалось выполнить бэктест. Ошибка:\n{stats_str}")
+            
+    except Exception as e:
+        bot.send_message(chat_id, f"❌ Произошла критическая ошибка во время выполнения бэктеста: {e}")
 
 # --- 3. Основная логика стратегии ---
 def get_live_data():
@@ -101,152 +115,105 @@ def get_live_data():
         return None
 
 def check_for_signal():
-    """
-    Проверяет наличие торгового сигнала с использованием Alpha Vantage.
-    """
-    print("Начало проверки сигнала...")
-    if not ALPHA_VANTAGE_API_KEY:
-        print("Ошибка: API-ключ для Alpha Vantage не задан.")
-        return
-
+    """Проверяет сигнал и возвращает сообщение или None."""
     try:
-        # --- Загрузка EUR/USD ---
-        fx = ForeignExchange(key=ALPHA_VANTAGE_API_KEY, output_format='pandas')
-        eurusd_data, _ = fx.get_currency_exchange_intraday('EUR', 'USD', interval='30min', outputsize='compact') # compact для скорости
-        eurusd_data.rename(columns={'1. open': 'Open', '2. high': 'High', '3. low': 'Low', '4. close': 'Close'}, inplace=True)
-        eurusd_data.index = pd.to_datetime(eurusd_data.index)
+        ml_model = joblib.load(MODEL_FILE)
+    except FileNotFoundError:
+        return f"ОШИБКА: Файл модели {MODEL_FILE} не найден!"
+
+    data = get_live_data()
+    if data is None: return "Рынок закрыт, проверка отменена."
+
+    last_candle_time = data.index[-1].tz_convert('UTC')
+    if (pd.Timestamp.now(tz='UTC') - last_candle_time).total_seconds() > 3600 * 4:
+        return f"Данные старые (последняя свеча: {last_candle_time}), рынок закрыт."
+
+    last_candle = data.iloc[-2]
+    current_hour = last_candle.name.hour
+
+    if not (13 <= current_hour <= 17):
+        return f"Вне торгового времени (час UTC: {current_hour})."
+    
+    start_index = len(data) - LOOKBACK_PERIOD - 2
+    end_index = len(data) - 2
+    
+    eurusd_judas_swing = last_candle['High'] > data['High'].iloc[start_index:end_index].max()
+    dxy_raid = last_candle['DXY_Low'] < data['DXY_Low'].iloc[start_index:end_index].min()
+
+    if eurusd_judas_swing and dxy_raid:
+        features = [last_candle[col] for col in ['RSI', 'MACD', 'MACD_hist', 'MACD_signal', 'ATR']]
+        win_prob = ml_model.predict_proba([features])[0][1]
         
-        # Пауза
-        time.sleep(15)
-
-        # --- Загрузка DXY ---
-        ts = TimeSeries(key=ALPHA_VANTAGE_API_KEY, output_format='pandas')
-        dxy_data, _ = ts.get_intraday(symbol='DXY', interval='30min', outputsize='compact')
-        dxy_data.rename(columns={'1. open': 'Open', '2. high': 'High', '3. low': 'Low', '4. close': 'Close', '5. volume': 'Volume'}, inplace=True)
-        dxy_data.index = pd.to_datetime(dxy_data.index)
-        
-        # Объединение и обработка
-        data = pd.merge(eurusd_data, dxy_data, on='date', suffixes=('_eurusd', '_dxy'), how='inner')
-        # ... (дальнейший код аналогичен backtest.py, но работает с последними данными)
-
-        # Расчет индикаторов
-        data.ta.rsi(length=14, append=True, col_names=('EURUSD_RSI_14'))
-        data.ta.rsi(length=14, close=data['dxy_Close'], append=True, col_names=('DXY_RSI_14'))
-        data.dropna(inplace=True)
-
-        if len(data) < LOOKBACK_PERIOD + 1:
-            print("Недостаточно данных для анализа.")
-            return
-
-        # Берем последние данные для анализа
-        latest_segment = data.iloc[-(LOOKBACK_PERIOD+1):-1]
-        
-        input_features = np.array([
-            latest_segment['EURUSD_RSI_14'].values,
-            latest_segment['DXY_RSI_14'].values
-        ]).flatten().reshape(1, -1)
-
-        model = joblib.load(MODEL_FILE)
-        prediction = model.predict_proba(input_features)[0][1]
-        
-        print(f"Проверка завершена. Вероятность сигнала: {prediction:.2f}")
-
-        if prediction > PREDICTION_THRESHOLD:
-            message = f"🚨 ВНИМАНИЕ! Обнаружен торговый сигнал! 🚨\n\n" \
-                      f"Инструмент: EUR/USD\n" \
-                      f"Таймфрейм: 30 минут\n" \
-                      f"Вероятность отработки: {prediction:.2%}\n\n" \
-                      f"Рекомендуется проверить график и принять решение."
-            
-            # Рассылка подписчикам
-            subscribers = get_subscribers()
-            for chat_id in subscribers:
-                try:
-                    bot.send_message(chat_id, message)
-                except Exception as e:
-                    print(f"Не удалось отправить сообщение пользователю {chat_id}: {e}")
-
-    except Exception as e:
-        print(f"Ошибка при проверке сигнала: {e}")
-        # Отправка ошибки администратору для отладки
-        if TELEGRAM_CHAT_ID:
-            error_message = f"Произошла ошибка в `check_for_signal`:\n\n{e}"
-            bot.send_message(TELEGRAM_CHAT_ID, error_message)
+        if win_prob >= PREDICTION_THRESHOLD:
+            return (
+                f"🚨 СИГНАЛ НА ПРОДАЖУ (SELL) EUR/USD 🚨\n\n"
+                f"Вероятность успеха: *{win_prob:.2%}*\n"
+                f"Время сетапа (UTC): `{last_candle.name}`"
+            )
+    return "Активных сигналов нет."
 
 # --- 4. Веб-сервер и Роуты ---
 @app.route('/webhook', methods=['POST'])
 def webhook():
     """Обрабатывает команды от пользователей Telegram."""
     update = telegram.Update.de_json(request.get_json(force=True), bot)
+    if not update.message or not update.message.text:
+        return 'ok'
+
     chat_id = update.message.chat.id
     text = update.message.text
 
-    try:
-        admin_chat_id = int(TELEGRAM_CHAT_ID)
-    except (ValueError, TypeError):
-        admin_chat_id = None
-
-    if text == '/start':
-        bot.send_message(chat_id, "Добро пожаловать! Этот бот присылает торговые сигналы по стратегии SMC+AI. Используйте /subscribe для подписки и /unsubscribe для отписки.")
-    elif text == '/subscribe':
+    if text.startswith('/start'):
+        bot.send_message(chat_id, "Добро пожаловать! Этот бот присылает торговые сигналы по стратегии SMC+AI.\n\nИспользуйте /subscribe для подписки.\n\nДля запуска бэктеста используйте команду: `/backtest [порог]`, например: `/backtest 0.67`", parse_mode='Markdown')
+    elif text.startswith('/subscribe'):
         if add_subscriber(chat_id):
             bot.send_message(chat_id, "Вы успешно подписались на сигналы!")
         else:
             bot.send_message(chat_id, "Вы уже подписаны.")
-    elif text == '/unsubscribe':
+    elif text.startswith('/unsubscribe'):
         if remove_subscriber(chat_id):
             bot.send_message(chat_id, "Вы успешно отписались от сигналов.")
         else:
             bot.send_message(chat_id, "Вы не были подписаны.")
-    elif text == '/runbacktest':
-        if admin_chat_id and chat_id == admin_chat_id:
-            bot.send_message(chat_id, "✅ Принято! Запускаю бектест с визуализацией... Это может занять несколько минут.")
-            
-            log_stream = io.StringIO()
-            image_buffers = []
-            results_log = ""
-            
-            try:
-                # Перехватываем текстовый вывод (print) из run_backtest
-                with contextlib.redirect_stdout(log_stream):
-                    image_buffers = run_backtest() # Теперь функция возвращает буферы с картинками
-                results_log = log_stream.getvalue()
-            except Exception as e:
-                results_log = f"Произошла критическая ошибка при выполнении бектеста:\\n{e}"
-            
-            if not results_log:
-                results_log = "Бектест завершился без текстового вывода."
+    
+    elif text.startswith('/backtest'):
+        try:
+            parts = text.split()
+            if len(parts) > 1:
+                threshold = float(parts[1].replace(',', '.'))
+            else:
+                threshold = 0.67 # Значение по умолчанию
 
-            # Отправляем текстовый лог
-            max_length = 4000
-            for i in range(0, len(results_log), max_length):
-                chunk = results_log[i:i + max_length]
-                bot.send_message(chat_id, f"<pre>{chunk}</pre>", parse_mode='HTML')
+            bot.send_message(chat_id, f"✅ Принято! Запускаю бэктест с порогом {threshold}.\n\nЭто может занять 1-2 минуты, пожалуйста, подождите...")
             
-            # Отправляем графики
-            if image_buffers:
-                bot.send_message(chat_id, f"Отправляю {len(image_buffers)} графика(ов) найденных сигналов...")
-                for img_buf in image_buffers:
-                    try:
-                        # Важно! Перемещаем курсор в начало буфера перед отправкой
-                        img_buf.seek(0)
-                        bot.send_photo(chat_id, photo=img_buf)
-                    except Exception as e:
-                        bot.send_message(chat_id, f"Не удалось отправить график: {e}")
-            elif "СИГНАЛ СГЕНЕРИРОВАН" in results_log:
-                 bot.send_message(chat_id, "Сигналы были найдены, но не удалось создать графики.")
+            thread = threading.Thread(target=run_backtest_and_send, args=(chat_id, threshold))
+            thread.start()
+            
+        except (ValueError, IndexError):
+            bot.send_message(chat_id, "❌ Ошибка! Неверный формат.\nИспользуйте: `/backtest [число]`, например: `/backtest 0.67`", parse_mode='Markdown')
+        except Exception as e:
+            bot.send_message(chat_id, f"❌ Ошибка при запуске команды: {e}")
 
-        else:
-            bot.send_message(chat_id, "⛔️ У вас нет прав для выполнения этой команды.")
-            
     return 'ok'
 
-@app.route('/check')
-def scheduled_check():
-    """Эндпоинт для UptimeRobot, запускает проверку сигнала."""
-    # Запускаем в фоновом режиме, чтобы не блокировать ответ
-    asyncio.run(asyncio.to_thread(check_for_signal))
-    return "Проверка сигнала запущена.", 200
+@app.route('/check', methods=['GET'])
+def check_route():
+    """Запускает проверку сигнала (для UptimeRobot)."""
+    print("Получен запрос на /check от планировщика.")
+    message = check_for_signal()
+    
+    if "СИГНАЛ НА ПРОДАЖУ" in message:
+        print(f"Найден сигнал, рассылаю подписчикам...")
+        subscribers = get_subscribers()
+        for sub_id in subscribers:
+            try:
+                bot.send_message(sub_id, message, parse_mode='Markdown')
+            except Exception as e:
+                print(f"Не удалось отправить сообщение подписчику {sub_id}: {e}")
+    else:
+        print(message) # Выводим в лог "Нет сигналов" или "Рынок закрыт"
+        
+    return message # Возвращаем статус для UptimeRobot
 
 @app.route('/')
 def index():
