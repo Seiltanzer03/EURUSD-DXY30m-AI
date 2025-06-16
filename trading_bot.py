@@ -154,6 +154,7 @@ def check_for_signal():
 
 async def run_backtest_async(chat_id, threshold):
     """Асинхронная функция для запуска бэктеста."""
+    logging.info(f"Executing run_backtest_async for chat_id {chat_id} with threshold {threshold}.")
     try:
         # 1. Уведомляем пользователя о начале
         await bot.send_message(chat_id, f"✅ Запускаю бэктест с фильтром {threshold}. Это может занять несколько минут...")
@@ -233,9 +234,8 @@ def webhook():
         logging.info(f"Webhook received: {update_data}")
         update = telegram.Update.de_json(update_data, bot)
         
-        # Отправляем coroutine на выполнение в фоновый поток
-        future = asyncio.run_coroutine_threadsafe(handle_update(update), background_loop)
-        future.result(timeout=5) # Добавим небольшой таймаут для надежности
+        # Отправляем coroutine на выполнение в фоновый поток (fire-and-forget)
+        asyncio.run_coroutine_threadsafe(handle_update(update), background_loop)
         logging.info("handle_update task scheduled successfully.")
         
     except Exception:
