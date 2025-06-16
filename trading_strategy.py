@@ -100,8 +100,8 @@ def run_backtest(threshold=0.67):
     
     # 1. Загрузка данных
     try:
-        eurusd_data = load_data_from_yfinance('EURUSD=X')
-        dxy_data = load_data_from_yfinance('DX-Y.NYB')
+        eurusd_data = load_data_from_yfinance('EURUSD=X', period='7d')
+        dxy_data = load_data_from_yfinance('DX-Y.NYB', period='7d')
     except Exception as e:
         return f"Ошибка загрузки данных: {e}", None
 
