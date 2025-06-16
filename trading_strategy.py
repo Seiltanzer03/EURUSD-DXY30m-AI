@@ -6,10 +6,9 @@ import os
 import numpy as np
 import yfinance as yf
 import time
-import matplotlib
-matplotlib.use('Agg')
+import requests
 
-# --- МОДЕЛЬ СТРАТЕГИИ (без изменений) ---
+# Определяем класс стратегии, чтобы он был доступен для импорта
 class SMCStrategy(Strategy):
     lookback_period = 20
     sl_ratio = 0.004
@@ -18,40 +17,19 @@ class SMCStrategy(Strategy):
     start_hour = 13
     end_hour = 17
     
+    # Эти параметры будут устанавливаться динамически
     ml_model = None
-    prediction_threshold = 0.67
+    prediction_threshold = 0.5
 
     def init(self):
         self.signal_to_trade = 0
 
     def next(self):
-        if self.signal_to_trade == -1 and not self.position:
-            entry_price = self.data.Open[-1] 
-            sl_price = entry_price * (1 + self.sl_ratio)
-            tp_price = entry_price * (1 - self.tp_ratio)
-
-            if not (np.isfinite(entry_price) and np.isfinite(sl_price) and np.isfinite(tp_price) and tp_price < entry_price < sl_price):
-                self.signal_to_trade = 0
-                return
-
-            stop_distance_per_unit = sl_price - entry_price
-            if stop_distance_per_unit > 0:
-                units_to_trade = (self.equity * self.risk_percent) / stop_distance_per_unit
-                if units_to_trade > 0:
-                    try:
-                        self.sell(size=int(units_to_trade), sl=sl_price, tp=tp_price)
-                    except Exception:
-                        self.signal_to_trade = 0
-                        return
-            self.signal_to_trade = 0
-            return
-
-        if self.position:
-            self.signal_to_trade = 0
-            return
-
+        # Логика генерации сигнала
         current_hour = self.data.index[-1].hour
-        if not (self.start_hour <= current_hour <= self.end_hour) or self.ml_model is None:
+        is_trading_time = self.start_hour <= current_hour <= self.end_hour
+        
+        if not is_trading_time or self.position or self.ml_model is None:
             return
 
         current_index = len(self.data.Close) - 1
@@ -76,36 +54,58 @@ class SMCStrategy(Strategy):
             win_probability = self.ml_model.predict_proba(current_features)[0][1]
             if win_probability >= self.prediction_threshold:
                 self.signal_to_trade = -1
+        else:
+            self.signal_to_trade = 0
 
-# --- ФУНКЦИЯ ЗАГРУЗКИ ДАННЫХ ---
-def load_data_from_yfinance(ticker, period="2y", interval="30m"):
-    print(f"Загрузка данных для {ticker} из Yahoo Finance за период {period}...")
-    for i in range(3):
-        try:
-            df = yf.download(tickers=ticker, period=period, interval=interval)
-            if not df.empty:
-                df.index = df.index.tz_convert('UTC')
-                print(f"Данные для {ticker} успешно загружены.")
-                return df
-        except Exception as e:
-            print(f"Ошибка при загрузке {ticker} (попытка {i+1}/3): {e}. Повтор через 5 секунд...")
-            time.sleep(5)
-    print(f"!!! КРИТИЧЕСКАЯ ОШИБКА: Не удалось загрузить данные для {ticker} после 3 попыток. !!!")
-    return None
+        # Логика исполнения сделки
+        if self.signal_to_trade == -1 and not self.position:
+            entry_price = self.data.Open[-1] 
+            sl_price = entry_price * (1 + self.sl_ratio)
+            tp_price = entry_price * (1 - self.tp_ratio)
 
-# --- ОСНОВНАЯ ФУНКЦИЯ ДЛЯ ЗАПУСКА БЭКТЕСТА ---
-def run_backtest(prediction_threshold=0.67):
-    """
-    Запускает полный процесс бэктестинга и возвращает результаты.
-    """
-    print(f"--- ЗАПУСК БЭКТЕСТА (порог={prediction_threshold}) ---")
+            if not (np.isfinite(entry_price) and np.isfinite(sl_price) and np.isfinite(tp_price) and (tp_price < entry_price < sl_price)):
+                self.signal_to_trade = 0
+                return
+
+            stop_distance_per_unit = sl_price - entry_price
+            if stop_distance_per_unit > 0:
+                initial_equity = 10000 # Используем фиксированное значение для расчета риска
+                fixed_risk_amount = initial_equity * self.risk_percent
+                units_to_trade = fixed_risk_amount / stop_distance_per_unit
+                if units_to_trade > 0:
+                    try:
+                        self.sell(size=int(units_to_trade), sl=sl_price, tp=tp_price)
+                    except Exception:
+                        pass # Игнорируем ошибки исполнения
+            self.signal_to_trade = 0
+
+def load_data_from_yfinance(ticker, period="2mo", interval="30m"):
+    """Загружает данные из Yahoo Finance с User-Agent."""
+    print(f"Загрузка {period} данных для {ticker}...")
+    session = requests.Session()
+    session.headers['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+    try:
+        df = yf.download(tickers=ticker, period=period, interval=interval, auto_adjust=True, session=session)
+        if df.empty:
+            raise ValueError(f"Нет данных для {ticker}. Рынок может быть закрыт.")
+        df.index = df.index.tz_convert('UTC')
+        df = df[['Open', 'High', 'Low', 'Close', 'Volume']]
+        print(f"Данные для {ticker} успешно загружены.")
+        return df
+    except Exception as e:
+        print(f"Критическая ошибка при загрузке {ticker}: {e}")
+        raise
+
+def run_backtest(threshold=0.67):
+    """Основная функция для запуска бэктеста."""
+    print("--- Запуск бэктеста ---")
     
     # 1. Загрузка данных
-    eurusd_data = load_data_from_yfinance('EURUSD=X')
-    dxy_data = load_data_from_yfinance('DX-Y.NYB')
-
-    if eurusd_data is None or dxy_data is None:
-        return "Ошибка: Не удалось загрузить данные из Yahoo Finance.", None
+    try:
+        eurusd_data = load_data_from_yfinance('EURUSD=X')
+        dxy_data = load_data_from_yfinance('DX-Y.NYB')
+    except Exception as e:
+        return f"Ошибка загрузки данных: {e}", None
 
     # 2. Подготовка данных
     eurusd_data.ta.rsi(length=14, append=True)
@@ -116,25 +116,27 @@ def run_backtest(prediction_threshold=0.67):
     dxy_data_renamed = dxy_data.rename(columns={'Low': 'DXY_Low'})
     data = pd.concat([eurusd_data, dxy_data_renamed['DXY_Low']], axis=1)
     data.dropna(inplace=True)
-    
-    # 3. Загрузка модели
-    MODEL_FILE = 'ml_model_final_fix.joblib'
-    if not os.path.exists(MODEL_FILE):
-        return f"Ошибка: Файл модели {MODEL_FILE} не найден.", None
-    model = joblib.load(MODEL_FILE)
-    
-    # 4. Запуск бэктеста
-    SMCStrategy.prediction_threshold = prediction_threshold
-    SMCStrategy.ml_model = model
 
-    bt = Backtest(data, SMCStrategy, cash=10000, commission=.0002, margin=0.05)
+    # 3. Загрузка модели
+    model_file = 'ml_model_final_fix.joblib'
+    if not os.path.exists(model_file):
+        return "Файл модели не найден!", None
+    model = joblib.load(model_file)
+
+    # 4. Запуск бэктеста
+    SMCStrategy.ml_model = model
+    SMCStrategy.prediction_threshold = threshold
     
-    try:
-        stats = bt.run()
-        plot_filename = f"backtest_plot_{int(time.time())}.png"
-        bt.plot(filename=plot_filename, plot_drawdown=True, plot_equity=True)
-        print("--- БЭКТЕСТ ЗАВЕРШЕН ---")
-        return stats.to_string(), plot_filename
-    except Exception as e:
-        print(f"ОШИБКА ВО ВРЕМЯ БЭКТЕСТА: {e}")
-        return f"Ошибка во время выполнения бэктеста: {e}", None
+    bt = Backtest(data, SMCStrategy, cash=10000, commission=.0002, margin=0.05)
+    stats = bt.run()
+    
+    # 5. Сохранение результатов
+    plot_filename = f"backtest_report_{threshold}_{int(time.time())}.html"
+    bt.plot(filename=plot_filename, open_browser=False)
+    
+    print("--- Бэктест завершен ---")
+    return stats, plot_filename
+
+# Этот блок больше не нужен, так как запуск будет из бота
+# if __name__ == "__main__":
+#     run_backtest()
