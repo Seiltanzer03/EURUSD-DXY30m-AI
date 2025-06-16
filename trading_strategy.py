@@ -8,6 +8,15 @@ import yfinance as yf
 import time
 import requests
 
+def flatten_multiindex_columns(df):
+    """
+    Проверяет, являются ли колонки MultiIndex, и если да, 'выпрямляет' их,
+    оставляя только верхний уровень (e.g., 'Open', 'Close').
+    """
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+    return df
+
 # Определяем класс стратегии, чтобы он был доступен для импорта
 class SMCStrategy(Strategy):
     lookback_period = 20
@@ -79,11 +88,13 @@ class SMCStrategy(Strategy):
                         pass # Игнорируем ошибки исполнения
             self.signal_to_trade = 0
 
-def load_data_from_yfinance(ticker, period="2mo", interval="30m"):
-    """Загружает данные из Yahoo Finance."""
+def load_data_from_yfinance(ticker, period="7d", interval="30m"):
+    """Загружает данные из Yahoo Finance и обрабатывает возможный MultiIndex."""
     print(f"Загрузка {period} данных для {ticker}...")
     try:
         df = yf.download(tickers=ticker, period=period, interval=interval, auto_adjust=True)
+        df = flatten_multiindex_columns(df)
+
         if df.empty:
             raise ValueError(f"Нет данных для {ticker}. Рынок может быть закрыт.")
         df.index = df.index.tz_convert('UTC')
