@@ -7,8 +7,8 @@ import yfinance as yf
 import telegram
 from flask import Flask, request
 import asyncio
-import threading
 from trading_strategy import run_backtest
+import threading
 
 # --- 1. Конфигурация и Инициализация ---
 app = Flask(__name__)
@@ -20,7 +20,7 @@ bot = telegram.Bot(token=TELEGRAM_BOT_TOKEN)
 
 # Настройки стратегии
 MODEL_FILE = 'ml_model_final_fix.joblib'
-PREDICTION_THRESHOLD = 0.55
+PREDICTION_THRESHOLD = 0.67 # Оптимальный порог для live-сигналов
 LOOKBACK_PERIOD = 20
 SUBSCRIBERS_FILE = 'subscribers.json'
 
@@ -51,27 +51,6 @@ def remove_subscriber(chat_id):
             json.dump(subscribers, f)
         return True
     return False
-
-# --- НОВАЯ ФУНКЦИЯ ДЛЯ ЗАПУСКА БЭКТЕСТА В ПОТОКЕ ---
-def run_backtest_and_send(chat_id, threshold):
-    """Функция для запуска бэктеста в отдельном потоке и отправки результатов."""
-    try:
-        bot.send_message(chat_id, "▶️ Шаг 1/3: Загрузка 2-х летних данных из Yahoo Finance...")
-        
-        stats_str, plot_file = run_backtest(prediction_threshold=threshold)
-        
-        if plot_file and os.path.exists(plot_file):
-            bot.send_message(chat_id, "✅ Шаг 2/3: Бэктест завершен. Формирую отчет...")
-            bot.send_message(chat_id, f"<pre>\n{stats_str}\n</pre>", parse_mode='HTML')
-            with open(plot_file, 'rb') as photo:
-                bot.send_photo(chat_id, photo=photo, caption=f"График бэктеста для порога {threshold}")
-            os.remove(plot_file)
-            bot.send_message(chat_id, "🏁 Шаг 3/3: Готово!")
-        else:
-            bot.send_message(chat_id, f"❌ Не удалось выполнить бэктест. Ошибка:\n{stats_str}")
-            
-    except Exception as e:
-        bot.send_message(chat_id, f"❌ Произошла критическая ошибка во время выполнения бэктеста: {e}")
 
 # --- 3. Основная логика стратегии ---
 def get_live_data():
@@ -152,48 +131,69 @@ def check_for_signal():
             )
     return "Активных сигналов нет."
 
+def run_backtest_in_thread(chat_id, threshold):
+    """Функция для запуска бэктеста в отдельном потоке."""
+    try:
+        # 1. Уведомляем пользователя о начале
+        bot.send_message(chat_id, f"✅ Запускаю бэктест с фильтром {threshold}. Это может занять несколько минут...")
+        
+        # 2. Запускаем саму функцию бэктеста
+        stats, plot_file = run_backtest(threshold)
+        
+        # 3. Отправляем результаты
+        if plot_file:
+            # Отправляем статистику
+            bot.send_message(chat_id, f"📊 Результаты бэктеста:\n\n<pre>{stats}</pre>", parse_mode='HTML')
+            
+            # Отправляем HTML-отчет
+            with open(plot_file, 'rb') as f:
+                bot.send_document(chat_id, document=f, caption=f"Подробный отчет по бэктесту с фильтром {threshold}")
+            os.remove(plot_file) # Удаляем файл после отправки
+        else:
+            # Если бэктест не удался, stats содержит текст ошибки
+            bot.send_message(chat_id, f"❌ Ошибка во время бэктеста: {stats}")
+            
+    except Exception as e:
+        bot.send_message(chat_id, f"❌ Критическая ошибка в потоке бэктеста: {e}")
+
 # --- 4. Веб-сервер и Роуты ---
 @app.route('/webhook', methods=['POST'])
 def webhook():
     """Обрабатывает команды от пользователей Telegram."""
     update = telegram.Update.de_json(request.get_json(force=True), bot)
-    if not update.message or not update.message.text:
+    if not update.message:
         return 'ok'
 
     chat_id = update.message.chat.id
     text = update.message.text
 
-    if text.startswith('/start'):
-        bot.send_message(chat_id, "Добро пожаловать! Этот бот присылает торговые сигналы по стратегии SMC+AI.\n\nИспользуйте /subscribe для подписки.\n\nДля запуска бэктеста используйте команду: `/backtest [порог]`, например: `/backtest 0.67`", parse_mode='Markdown')
-    elif text.startswith('/subscribe'):
+    if text == '/start':
+        bot.send_message(chat_id, "Добро пожаловать! Этот бот присылает торговые сигналы по стратегии SMC+AI. Используйте /subscribe для подписки и /unsubscribe для отписки.")
+    elif text == '/subscribe':
         if add_subscriber(chat_id):
             bot.send_message(chat_id, "Вы успешно подписались на сигналы!")
         else:
             bot.send_message(chat_id, "Вы уже подписаны.")
-    elif text.startswith('/unsubscribe'):
+    elif text == '/unsubscribe':
         if remove_subscriber(chat_id):
             bot.send_message(chat_id, "Вы успешно отписались от сигналов.")
         else:
             bot.send_message(chat_id, "Вы не были подписаны.")
-    
     elif text.startswith('/backtest'):
         try:
+            # Устанавливаем порог по умолчанию или берем из команды
+            threshold = 0.67 
             parts = text.split()
             if len(parts) > 1:
-                threshold = float(parts[1].replace(',', '.'))
-            else:
-                threshold = 0.67 # Значение по умолчанию
-
-            bot.send_message(chat_id, f"✅ Принято! Запускаю бэктест с порогом {threshold}.\n\nЭто может занять 1-2 минуты, пожалуйста, подождите...")
+                threshold = float(parts[1])
             
-            thread = threading.Thread(target=run_backtest_and_send, args=(chat_id, threshold))
+            # Запускаем бэктест в отдельном потоке, чтобы не блокировать бота
+            thread = threading.Thread(target=run_backtest_in_thread, args=(chat_id, threshold))
             thread.start()
             
         except (ValueError, IndexError):
-            bot.send_message(chat_id, "❌ Ошибка! Неверный формат.\nИспользуйте: `/backtest [число]`, например: `/backtest 0.67`", parse_mode='Markdown')
-        except Exception as e:
-            bot.send_message(chat_id, f"❌ Ошибка при запуске команды: {e}")
-
+            bot.send_message(chat_id, "Неверный формат. Используйте: /backtest [уровень_фильтра], например: /backtest 0.67")
+        
     return 'ok'
 
 @app.route('/check', methods=['GET'])
