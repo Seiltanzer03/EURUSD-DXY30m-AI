@@ -8,4 +8,5 @@ yfinance==0.2.63
 requests==2.32.4
 python-telegram-bot==21.0.1
 setuptools
- 
+Flask
+gunicorn
