@@ -9,8 +9,18 @@ from flask import Flask, request
 import asyncio
 from trading_strategy import run_backtest
 import threading
+import logging
 
 # --- 1. Конфигурация и Инициализация ---
+
+# Настройка логирования для отладки
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+
+# Хранилище для фоновых задач, чтобы их не удалил сборщик мусора
+background_tasks = set()
 
 # Создаем и запускаем event loop в отдельном потоке.
 # Это нужно, чтобы асинхронные задачи Telegram не блокировали синхронный Flask.
@@ -169,46 +179,67 @@ async def run_backtest_async(chat_id, threshold):
 
 async def handle_update(update):
     """Асинхронно обрабатывает входящие сообщения."""
-    if not update.message:
-        return
+    try:
+        if not update.message or not update.message.text:
+            logging.warning("Update received without a message or text, ignoring.")
+            return
 
-    chat_id = update.message.chat.id
-    text = update.message.text
+        chat_id = update.message.chat.id
+        text = update.message.text
+        logging.info(f"Received message from chat_id {chat_id}: {text}")
 
-    if text == '/start':
-        await bot.send_message(chat_id, "Добро пожаловать! Этот бот присылает торговые сигналы по стратегии SMC+AI. Используйте /subscribe для подписки и /unsubscribe для отписки.")
-    elif text == '/subscribe':
-        if add_subscriber(chat_id):
-            await bot.send_message(chat_id, "Вы успешно подписались на сигналы!")
+        if text == '/start':
+            await bot.send_message(chat_id, "Добро пожаловать! Этот бот присылает торговые сигналы по стратегии SMC+AI. Используйте /subscribe для подписки и /unsubscribe для отписки.")
+        elif text == '/subscribe':
+            if add_subscriber(chat_id):
+                await bot.send_message(chat_id, "Вы успешно подписались на сигналы!")
+            else:
+                await bot.send_message(chat_id, "Вы уже подписаны.")
+        elif text == '/unsubscribe':
+            if remove_subscriber(chat_id):
+                await bot.send_message(chat_id, "Вы успешно отписались от сигналов.")
+            else:
+                await bot.send_message(chat_id, "Вы не были подписаны.")
+        elif text.startswith('/backtest'):
+            logging.info(f"'/backtest' command recognized for chat_id {chat_id}.")
+            try:
+                threshold = 0.67
+                parts = text.split()
+                if len(parts) > 1:
+                    threshold = float(parts[1])
+                
+                logging.info(f"Creating backtest task with threshold {threshold} for chat_id {chat_id}.")
+                # Создаем задачу и сохраняем на нее ссылку
+                task = asyncio.create_task(run_backtest_async(chat_id, threshold))
+                background_tasks.add(task)
+                task.add_done_callback(background_tasks.discard)
+                logging.info(f"Backtest task for chat_id {chat_id} has been created and stored.")
+                
+            except (ValueError, IndexError):
+                logging.error("Failed to parse /backtest command.", exc_info=True)
+                await bot.send_message(chat_id, "Неверный формат. Используйте: /backtest [уровень_фильтра], например: /backtest 0.67")
         else:
-            await bot.send_message(chat_id, "Вы уже подписаны.")
-    elif text == '/unsubscribe':
-        if remove_subscriber(chat_id):
-            await bot.send_message(chat_id, "Вы успешно отписались от сигналов.")
-        else:
-            await bot.send_message(chat_id, "Вы не были подписаны.")
-    elif text.startswith('/backtest'):
-        try:
-            threshold = 0.67
-            parts = text.split()
-            if len(parts) > 1:
-                threshold = float(parts[1])
-            
-            # Запускаем асинхронную задачу бэктеста и не ждем ее завершения
-            asyncio.create_task(run_backtest_async(chat_id, threshold))
-            
-        except (ValueError, IndexError):
-            await bot.send_message(chat_id, "Неверный формат. Используйте: /backtest [уровень_фильтра], например: /backtest 0.67")
+            logging.info(f"Command '{text}' not recognized by any handler.")
+
+    except Exception:
+        logging.error("An unhandled exception occurred in handle_update.", exc_info=True)
 
 # --- 4. Веб-сервер и Роуты ---
 @app.route('/webhook', methods=['POST'])
 def webhook():
     """Обрабатывает вебхуки от Telegram, отправляя задачу в фоновый event loop."""
-    update_data = request.get_json(force=True)
-    update = telegram.Update.de_json(update_data, bot)
-    
-    # Отправляем coroutine на выполнение в фоновый поток
-    asyncio.run_coroutine_threadsafe(handle_update(update), background_loop)
+    try:
+        update_data = request.get_json(force=True)
+        logging.info(f"Webhook received: {update_data}")
+        update = telegram.Update.de_json(update_data, bot)
+        
+        # Отправляем coroutine на выполнение в фоновый поток
+        future = asyncio.run_coroutine_threadsafe(handle_update(update), background_loop)
+        future.result(timeout=5) # Добавим небольшой таймаут для надежности
+        logging.info("handle_update task scheduled successfully.")
+        
+    except Exception:
+        logging.error("An error occurred in the webhook handler.", exc_info=True)
     
     return 'ok'
 
