@@ -7,6 +7,7 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import mplfinance as mpf
+import warnings
 
 MODEL_FILE = 'ml_model_final_fix.joblib'
 PREDICTION_THRESHOLD = 0.1
@@ -53,27 +54,31 @@ def generate_signal_and_plot():
     tp = entry * (1 - TP_RATIO)
     plot_path = None
     if signal:
-        candles = data[-50:].copy()
-        candles.index.name = 'Date'
-        addplots = [
-            mpf.make_addplot([entry]*len(candles), color='blue', linestyle='--', width=1, label='Entry'),
-            mpf.make_addplot([sl]*len(candles), color='red', linestyle='--', width=1, label='Stop Loss'),
-            mpf.make_addplot([tp]*len(candles), color='green', linestyle='--', width=1, label='Take Profit'),
-        ]
-        fig, axlist = mpf.plot(
-            candles,
-            type='candle',
-            style='charles',
-            addplot=addplots,
-            returnfig=True,
-            title=f'SELL EURUSD ({TIMEFRAME})',
-            ylabel='Price',
-            figsize=(10, 5)
-        )
-        ax = axlist[0]
-        ax.scatter([candles.index[-1]], [entry], color='blue', marker='v', s=100, label='Sell Entry')
-        fig.tight_layout()
-        plot_path = 'signal.png'
-        fig.savefig(plot_path)
-        plt.close(fig)
+        candles = data[~data.index.duplicated(keep='last')].tail(50).copy()
+        if len(candles) < 10:
+            warnings.warn('Недостаточно данных для построения графика (меньше 10 свечей)')
+            plot_path = None
+        else:
+            candles.index.name = 'Date'
+            addplots = [
+                mpf.make_addplot([entry]*len(candles), color='blue', linestyle='--', width=1, label='Entry'),
+                mpf.make_addplot([sl]*len(candles), color='red', linestyle='--', width=1, label='Stop Loss'),
+                mpf.make_addplot([tp]*len(candles), color='green', linestyle='--', width=1, label='Take Profit'),
+            ]
+            fig, axlist = mpf.plot(
+                candles,
+                type='candle',
+                style='charles',
+                addplot=addplots,
+                returnfig=True,
+                title=f'SELL EURUSD ({TIMEFRAME})',
+                ylabel='Price',
+                figsize=(10, 5)
+            )
+            ax = axlist[0]
+            ax.scatter([candles.index[-1]], [entry], color='blue', marker='v', s=100, label='Sell Entry')
+            fig.tight_layout()
+            plot_path = 'signal.png'
+            fig.savefig(plot_path)
+            plt.close(fig)
     return signal, entry, sl, tp, last, plot_path 
