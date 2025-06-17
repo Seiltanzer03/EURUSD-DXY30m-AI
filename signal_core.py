@@ -131,110 +131,123 @@ def generate_signal_and_plot():
     tp = entry * (1 - TP_RATIO)
     plot_path = None
     if signal:
-        # Берем больше свечей для графика
-        candles = data.tail(100).copy()
-        
-        # Отладочная информация
-        print(f"Количество свечей для графика: {len(candles)}")
-        print(f"Временной диапазон: {candles.index[0]} - {candles.index[-1]}")
-        print(f"Столбцы: {candles.columns.tolist()}")
-        
-        # Проверка на дубликаты индексов
-        if candles.index.duplicated().any():
-            print("Обнаружены дубликаты в индексе, удаляем...")
-            candles = candles.loc[~candles.index.duplicated(keep='last')]
-        
-        if len(candles) < 10:
-            warnings.warn(f'Недостаточно данных для построения графика ({len(candles)} < 10)')
-            plot_path = None
-        else:
-            # Важно: mplfinance требует, чтобы индекс был DatetimeIndex
-            # и имел имя 'Date'
-            candles.index.name = 'Date'
+        try:
+            # Берем последние 50 свечей для графика
+            candles = data.tail(50).copy()
             
-            # Проверяем формат индекса для mplfinance
-            if not isinstance(candles.index, pd.DatetimeIndex):
-                print("Преобразуем индекс в DatetimeIndex для mplfinance")
-                candles.index = pd.to_datetime(candles.index)
+            # Отладочная информация
+            print(f"Количество свечей для графика: {len(candles)}")
+            print(f"Временной диапазон: {candles.index[0]} - {candles.index[-1]}")
             
-            # ВАЖНО: Удаляем информацию о временной зоне, которая может мешать mplfinance
-            if candles.index.tz is not None:
-                print("Удаляем информацию о временной зоне для корректной работы mplfinance")
-                candles.index = candles.index.tz_localize(None)
+            # Проверка на дубликаты индексов
+            if candles.index.duplicated().any():
+                print("Обнаружены дубликаты в индексе, удаляем...")
+                candles = candles.loc[~candles.index.duplicated(keep='last')]
             
-            # Проверяем, что данные имеют правильный формат для mplfinance
-            required_columns = ['Open', 'High', 'Low', 'Close']
-            if not all(col in candles.columns for col in required_columns):
-                print(f"ОШИБКА: Отсутствуют обязательные столбцы для графика: {[col for col in required_columns if col not in candles.columns]}")
+            if len(candles) < 10:
+                warnings.warn(f'Недостаточно данных для построения графика ({len(candles)} < 10)')
                 return signal, entry, sl, tp, last, None, TIMEFRAME
             
-            # Убедимся, что данные имеют правильный тип
+            # Подготовка данных для mplfinance
+            # 1. Сбрасываем индекс в обычный столбец
+            candles = candles.reset_index()
+            
+            # 2. Убеждаемся, что столбец с датой имеет правильное имя
+            date_col = next((col for col in ['Datetime', 'Date', 'index'] if col in candles.columns), None)
+            if not date_col:
+                print("ОШИБКА: Не найден столбец с датой/временем")
+                return signal, entry, sl, tp, last, None, TIMEFRAME
+            
+            # 3. Переименовываем столбец с датой в 'Date'
+            candles = candles.rename(columns={date_col: 'Date'})
+            
+            # 4. Преобразуем дату в формат без временной зоны
+            candles['Date'] = pd.to_datetime(candles['Date']).dt.tz_localize(None)
+            
+            # 5. Устанавливаем 'Date' как индекс
+            candles = candles.set_index('Date')
+            
+            # Проверяем наличие обязательных столбцов OHLC
+            required_columns = ['Open', 'High', 'Low', 'Close']
+            if not all(col in candles.columns for col in required_columns):
+                print(f"ОШИБКА: Отсутствуют обязательные столбцы: {[col for col in required_columns if col not in candles.columns]}")
+                return signal, entry, sl, tp, last, None, TIMEFRAME
+            
+            # Преобразуем числовые столбцы
             for col in required_columns:
                 candles[col] = pd.to_numeric(candles[col], errors='coerce')
             
-            # Удаляем строки с NaN в обязательных столбцах
-            candles.dropna(subset=required_columns, inplace=True)
+            # Удаляем строки с NaN в OHLC
+            candles = candles.dropna(subset=required_columns)
             
-            # Проверяем, остались ли данные после очистки
             if len(candles) < 10:
-                print(f"ОШИБКА: После очистки осталось слишком мало свечей: {len(candles)}")
+                print(f"ОШИБКА: После очистки осталось мало данных: {len(candles)}")
                 return signal, entry, sl, tp, last, None, TIMEFRAME
-                
-            # Создаем линии для графика
-            entry_line = pd.Series([entry] * len(candles), index=candles.index)
-            sl_line = pd.Series([sl] * len(candles), index=candles.index)
-            tp_line = pd.Series([tp] * len(candles), index=candles.index)
             
-            # Отладочная информация после подготовки
-            print(f"Готовые данные для графика: {len(candles)} свечей")
+            # Создаем линии для уровней входа, SL и TP
+            # Используем списки для совместимости с mplfinance
+            dates = candles.index.tolist()
+            entry_line = [entry] * len(dates)
+            sl_line = [sl] * len(dates)
+            tp_line = [tp] * len(dates)
             
-            addplots = [
-                mpf.make_addplot(entry_line, color='blue', linestyle='--', width=1, label='Entry'),
-                mpf.make_addplot(sl_line, color='red', linestyle='--', width=1, label='Stop Loss'),
-                mpf.make_addplot(tp_line, color='green', linestyle='--', width=1, label='Take Profit'),
+            # Создаем дополнительные графики для линий
+            apds = [
+                mpf.make_addplot([entry] * len(candles), type='line', color='blue', width=1, linestyle='--', label='Entry'),
+                mpf.make_addplot([sl] * len(candles), type='line', color='red', width=1, linestyle='--', label='Stop Loss'),
+                mpf.make_addplot([tp] * len(candles), type='line', color='green', width=1, linestyle='--', label='Take Profit')
             ]
             
-            try:
-                # Используем только необходимые столбцы в правильном порядке
-                plot_data = candles[['Open', 'High', 'Low', 'Close']]
-                
-                # Создаем график с улучшенным стилем
-                fig, axlist = mpf.plot(
-                    plot_data,
-                    type='candle',
-                    style=s,  # Используем кастомный стиль
-                    addplot=addplots,
-                    returnfig=True,
-                    title=f'SELL EURUSD ({TIMEFRAME})',
-                    ylabel='Price',
-                    figsize=(12, 8),
-                    warn_too_much_data=10000
-                )
-                ax = axlist[0]
-                
-                # Добавляем точку входа
-                ax.scatter([candles.index[-1]], [entry], color='blue', marker='v', s=100, label='Sell Entry')
-                
-                # Настраиваем границы графика для лучшей видимости всех свечей
-                price_range = candles['High'].max() - candles['Low'].min()
-                ax.set_ylim(
-                    candles['Low'].min() - price_range * 0.1,  # Нижняя граница с отступом 10%
-                    candles['High'].max() + price_range * 0.1   # Верхняя граница с отступом 10%
-                )
-                
-                # Добавляем легенду в удобное место
-                ax.legend(loc='upper left')
-                
-                # Улучшаем формат подписей осей
-                ax.tick_params(axis='both', which='major', labelsize=10)
-                
-                plot_path = 'signal.png'
-                fig.savefig(plot_path, dpi=150, bbox_inches='tight')  # Сохраняем с плотной компоновкой
-                plt.close(fig)
-                print(f"График успешно сохранен в {plot_path}")
-            except Exception as e:
-                print(f"Ошибка при построении графика: {e}")
-                plot_path = None
+            # Настраиваем стиль графика
+            mc = mpf.make_marketcolors(
+                up='green', down='red',
+                edge={'up':'green', 'down':'red'},
+                wick={'up':'green', 'down':'red'},
+                volume='blue'
+            )
+            
+            s = mpf.make_mpf_style(
+                marketcolors=mc,
+                gridstyle='-',
+                gridcolor='#E0E0E0',
+                gridaxis='both',
+                y_on_right=False,
+                facecolor='white',
+                figcolor='white',
+                edgecolor='black'
+            )
+            
+            # Создаем график
+            fig, axes = mpf.plot(
+                candles,
+                type='candle',
+                style=s,
+                title=f'SELL EURUSD ({TIMEFRAME})',
+                ylabel='Price',
+                addplot=apds,
+                figsize=(12, 8),
+                returnfig=True
+            )
+            
+            # Добавляем маркер точки входа
+            ax = axes[0]
+            ax.scatter([len(candles)-1], [entry], color='blue', marker='v', s=120, label='Sell Entry')
+            
+            # Добавляем легенду
+            ax.legend(loc='upper left')
+            
+            # Сохраняем график
+            plot_path = 'signal.png'
+            fig.savefig(plot_path, dpi=150, bbox_inches='tight')
+            plt.close(fig)
+            print(f"График успешно сохранен в {plot_path}")
+            
+        except Exception as e:
+            print(f"Ошибка при построении графика: {e}")
+            import traceback
+            traceback.print_exc()
+            plot_path = None
+    
     return signal, entry, sl, tp, last, plot_path, TIMEFRAME
 
 def generate_signal_and_plot_30m():
@@ -286,114 +299,123 @@ def generate_signal_and_plot_30m():
     plot_path = None
     
     if signal:
-        # Берем больше свечей для графика
-        candles = data.tail(100).copy()
-        
-        # Отладочная информация
-        print(f"[30M] Количество свечей для графика: {len(candles)}")
-        print(f"[30M] Временной диапазон: {candles.index[0]} - {candles.index[-1]}")
-        print(f"[30M] Столбцы: {candles.columns.tolist()}")
-        
-        # Проверка на дубликаты индексов
-        if candles.index.duplicated().any():
-            print("[30M] Обнаружены дубликаты в индексе, удаляем...")
-            candles = candles.loc[~candles.index.duplicated(keep='last')]
-        
-        if len(candles) < 10:
-            print(f"[30M] Недостаточно данных для построения графика: {len(candles)} < 10")
-            plot_path = None
-        else:
-            # Важно: mplfinance требует, чтобы индекс был DatetimeIndex
-            # и имел имя 'Date'
-            candles.index.name = 'Date'
+        try:
+            # Берем последние 50 свечей для графика
+            candles = data.tail(50).copy()
             
-            # Проверяем формат индекса для mplfinance
-            if not isinstance(candles.index, pd.DatetimeIndex):
-                print("[30M] Преобразуем индекс в DatetimeIndex для mplfinance")
-                candles.index = pd.to_datetime(candles.index)
+            # Отладочная информация
+            print(f"[30M] Количество свечей для графика: {len(candles)}")
+            print(f"[30M] Временной диапазон: {candles.index[0]} - {candles.index[-1]}")
             
-            # ВАЖНО: Удаляем информацию о временной зоне, которая может мешать mplfinance
-            if candles.index.tz is not None:
-                print("[30M] Удаляем информацию о временной зоне для корректной работы mplfinance")
-                candles.index = candles.index.tz_localize(None)
+            # Проверка на дубликаты индексов
+            if candles.index.duplicated().any():
+                print("[30M] Обнаружены дубликаты в индексе, удаляем...")
+                candles = candles.loc[~candles.index.duplicated(keep='last')]
             
-            # Проверяем, что данные имеют правильный формат для mplfinance
-            required_columns = ['Open', 'High', 'Low', 'Close']
-            if not all(col in candles.columns for col in required_columns):
-                print(f"[30M] ОШИБКА: Отсутствуют обязательные столбцы для графика: {[col for col in required_columns if col not in candles.columns]}")
+            if len(candles) < 10:
+                print(f"[30M] Недостаточно данных для построения графика: {len(candles)} < 10")
                 return signal, entry, sl, tp, last, None, timeframe
             
-            # Убедимся, что данные имеют правильный тип
+            # Подготовка данных для mplfinance
+            # 1. Сбрасываем индекс в обычный столбец
+            candles = candles.reset_index()
+            
+            # 2. Убеждаемся, что столбец с датой имеет правильное имя
+            date_col = next((col for col in ['Datetime', 'Date', 'index'] if col in candles.columns), None)
+            if not date_col:
+                print("[30M] ОШИБКА: Не найден столбец с датой/временем")
+                return signal, entry, sl, tp, last, None, timeframe
+            
+            # 3. Переименовываем столбец с датой в 'Date'
+            candles = candles.rename(columns={date_col: 'Date'})
+            
+            # 4. Преобразуем дату в формат без временной зоны
+            candles['Date'] = pd.to_datetime(candles['Date']).dt.tz_localize(None)
+            
+            # 5. Устанавливаем 'Date' как индекс
+            candles = candles.set_index('Date')
+            
+            # Проверяем наличие обязательных столбцов OHLC
+            required_columns = ['Open', 'High', 'Low', 'Close']
+            if not all(col in candles.columns for col in required_columns):
+                print(f"[30M] ОШИБКА: Отсутствуют обязательные столбцы: {[col for col in required_columns if col not in candles.columns]}")
+                return signal, entry, sl, tp, last, None, timeframe
+            
+            # Преобразуем числовые столбцы
             for col in required_columns:
                 candles[col] = pd.to_numeric(candles[col], errors='coerce')
             
-            # Удаляем строки с NaN в обязательных столбцах
-            candles.dropna(subset=required_columns, inplace=True)
+            # Удаляем строки с NaN в OHLC
+            candles = candles.dropna(subset=required_columns)
             
-            # Проверяем, остались ли данные после очистки
             if len(candles) < 10:
-                print(f"[30M] ОШИБКА: После очистки осталось слишком мало свечей: {len(candles)}")
+                print(f"[30M] ОШИБКА: После очистки осталось мало данных: {len(candles)}")
                 return signal, entry, sl, tp, last, None, timeframe
             
-            # Создаем линии для уровней
-            entry_line = pd.Series([entry] * len(candles), index=candles.index)
-            sl_line = pd.Series([sl] * len(candles), index=candles.index)
-            tp_line = pd.Series([tp] * len(candles), index=candles.index)
-
-            addplots = [
-                mpf.make_addplot(entry_line, color='blue', linestyle='--', width=1, label='Entry'),
-                mpf.make_addplot(sl_line, color='red', linestyle='--', width=1, label='Stop Loss'),
-                mpf.make_addplot(tp_line, color='green', linestyle='--', width=1, label='Take Profit'),
+            # Создаем линии для уровней входа, SL и TP
+            # Используем списки для совместимости с mplfinance
+            dates = candles.index.tolist()
+            entry_line = [entry] * len(dates)
+            sl_line = [sl] * len(dates)
+            tp_line = [tp] * len(dates)
+            
+            # Создаем дополнительные графики для линий
+            apds = [
+                mpf.make_addplot([entry] * len(candles), type='line', color='blue', width=1, linestyle='--', label='Entry'),
+                mpf.make_addplot([sl] * len(candles), type='line', color='red', width=1, linestyle='--', label='Stop Loss'),
+                mpf.make_addplot([tp] * len(candles), type='line', color='green', width=1, linestyle='--', label='Take Profit')
             ]
             
-            try:
-                # Используем только необходимые столбцы в правильном порядке
-                plot_data = candles[['Open', 'High', 'Low', 'Close']]
-                
-                # Отладка: проверяем первые несколько строк данных
-                print(f"[30M] Первые 5 строк данных для графика:")
-                print(plot_data.head(5))
-                
-                # Создаем график с улучшенным стилем
-                fig, axlist = mpf.plot(
-                    plot_data,
-                    type='candle',
-                    style=s,  # Используем кастомный стиль
-                    addplot=addplots,
-                    returnfig=True,
-                    title=f'SELL EURUSD ({timeframe})',
-                    ylabel='Price',
-                    figsize=(12, 8),
-                    warn_too_much_data=10000
-                )
-                ax = axlist[0]
-                
-                # Добавляем точку входа
-                ax.scatter([candles.index[-1]], [entry], color='blue', marker='v', s=100, label='Sell Entry')
-                
-                # Настраиваем границы графика для лучшей видимости всех свечей
-                price_range = candles['High'].max() - candles['Low'].min()
-                ax.set_ylim(
-                    candles['Low'].min() - price_range * 0.1,  # Нижняя граница с отступом 10%
-                    candles['High'].max() + price_range * 0.1   # Верхняя граница с отступом 10%
-                )
-                
-                # Добавляем легенду в удобное место
-                ax.legend(loc='upper left')
-                
-                # Улучшаем формат подписей осей
-                ax.tick_params(axis='both', which='major', labelsize=10)
-                
-                plot_path = 'signal_30m.png'
-                fig.savefig(plot_path, dpi=150, bbox_inches='tight')  # Сохраняем с плотной компоновкой
-                plt.close(fig)
-                print(f"[30M] График успешно сохранен в {plot_path}")
-            except Exception as e:
-                print(f"[30M] Ошибка при построении графика: {e}")
-                import traceback
-                traceback.print_exc()
-                plot_path = None
+            # Настраиваем стиль графика
+            mc = mpf.make_marketcolors(
+                up='green', down='red',
+                edge={'up':'green', 'down':'red'},
+                wick={'up':'green', 'down':'red'},
+                volume='blue'
+            )
             
+            s = mpf.make_mpf_style(
+                marketcolors=mc,
+                gridstyle='-',
+                gridcolor='#E0E0E0',
+                gridaxis='both',
+                y_on_right=False,
+                facecolor='white',
+                figcolor='white',
+                edgecolor='black'
+            )
+            
+            # Создаем график
+            fig, axes = mpf.plot(
+                candles,
+                type='candle',
+                style=s,
+                title=f'SELL EURUSD ({timeframe})',
+                ylabel='Price',
+                addplot=apds,
+                figsize=(12, 8),
+                returnfig=True
+            )
+            
+            # Добавляем маркер точки входа
+            ax = axes[0]
+            ax.scatter([len(candles)-1], [entry], color='blue', marker='v', s=120, label='Sell Entry')
+            
+            # Добавляем легенду
+            ax.legend(loc='upper left')
+            
+            # Сохраняем график
+            plot_path = 'signal_30m.png'
+            fig.savefig(plot_path, dpi=150, bbox_inches='tight')
+            plt.close(fig)
+            print(f"[30M] График успешно сохранен в {plot_path}")
+            
+        except Exception as e:
+            print(f"[30M] Ошибка при построении графика: {e}")
+            import traceback
+            traceback.print_exc()
+            plot_path = None
+    
     # Возвращаем False если сигнал не прошел порог вероятности
     if not signal:
         print(f"[30M] Сигнал не прошел порог вероятности: {win_prob} < 0.67")
