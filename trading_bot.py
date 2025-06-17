@@ -12,6 +12,7 @@ import threading
 import logging
 import subprocess
 import re
+from signal_core import generate_signal_and_plot, TIMEFRAME
 
 # --- 1. Конфигурация и Инициализация ---
 
@@ -251,12 +252,16 @@ async def handle_update(update):
                 logging.error("Failed to parse /backtest command.", exc_info=True)
                 await bot.send_message(chat_id, "Неверный формат. Используйте: /backtest [уровень_фильтра], например: /backtest 0.67")
         elif text == '/check':
-            import subprocess
             try:
-                output = subprocess.check_output(['python', 'signal_generator.py'], encoding='utf-8')
-                message, image_path = parse_signal_output(output)
+                signal, entry, sl, tp, last, image_path = generate_signal_and_plot()
+                if signal is None:
+                    message = "Нет сигнала (недостаточно данных или NaN)"
+                elif signal:
+                    message = f"СИГНАЛ: SELL EURUSD ({TIMEFRAME})\nВремя: {last.name}\nEntry: {entry:.5f}\nStop Loss: {sl:.5f}\nTake Profit: {tp:.5f}"
+                else:
+                    message = f"Нет сигнала | Время: {last.name}"
             except Exception as e:
-                message = f"Ошибка при запуске signal_generator.py: {e}"
+                message = f"Ошибка при генерации сигнала: {e}"
                 image_path = None
             if image_path:
                 with open(image_path, 'rb') as img:
@@ -292,13 +297,17 @@ def webhook():
 
 @app.route('/check', methods=['GET'])
 def check_route():
-    """Запускает проверку сигнала (для UptimeRobot). Теперь используется signal_generator.py."""
     print("Получен запрос на /check от планировщика.")
     try:
-        output = subprocess.check_output(['python', 'signal_generator.py'], encoding='utf-8')
-        message, image_path = parse_signal_output(output)
+        signal, entry, sl, tp, last, image_path = generate_signal_and_plot()
+        if signal is None:
+            message = "Нет сигнала (недостаточно данных или NaN)"
+        elif signal:
+            message = f"СИГНАЛ: SELL EURUSD ({TIMEFRAME})\nВремя: {last.name}\nEntry: {entry:.5f}\nStop Loss: {sl:.5f}\nTake Profit: {tp:.5f}"
+        else:
+            message = f"Нет сигнала | Время: {last.name}"
     except Exception as e:
-        message = f"Ошибка при запуске signal_generator.py: {e}"
+        message = f"Ошибка при генерации сигнала: {e}"
         image_path = None
 
     if "СИГНАЛ" in message:
