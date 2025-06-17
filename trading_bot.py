@@ -12,7 +12,7 @@ import threading
 import logging
 import subprocess
 import re
-from signal_core import generate_signal_and_plot, TIMEFRAME
+from signal_core import generate_signal_and_plot, generate_signal_and_plot_30m, TIMEFRAME
 
 # --- 1. Конфигурация и Инициализация ---
 
@@ -253,21 +253,33 @@ async def handle_update(update):
                 await bot.send_message(chat_id, "Неверный формат. Используйте: /backtest [уровень_фильтра], например: /backtest 0.67")
         elif text == '/check':
             try:
-                signal, entry, sl, tp, last, image_path = generate_signal_and_plot()
-                if signal is None:
-                    message = "Нет сигнала (недостаточно данных или NaN)"
-                elif signal:
-                    message = f"СИГНАЛ: SELL EURUSD ({TIMEFRAME})\nВремя: {last.name}\nEntry: {entry:.5f}\nStop Loss: {sl:.5f}\nTake Profit: {tp:.5f}"
+                signal_5m, entry_5m, sl_5m, tp_5m, last_5m, image_path_5m = generate_signal_and_plot()
+                signal_30m, entry_30m, sl_30m, tp_30m, last_30m, image_path_30m, tf_30m = generate_signal_and_plot_30m()
+                messages = []
+                images = []
+                if signal_5m is None:
+                    messages.append("Нет сигнала (5m, недостаточно данных или NaN)")
+                elif signal_5m:
+                    messages.append(f"СИГНАЛ: SELL EURUSD (5m)\nВремя: {last_5m.name}\nEntry: {entry_5m:.5f}\nStop Loss: {sl_5m:.5f}\nTake Profit: {tp_5m:.5f}")
+                    images.append(image_path_5m)
                 else:
-                    message = f"Нет сигнала | Время: {last.name}"
+                    messages.append(f"Нет сигнала (5m) | Время: {last_5m.name}")
+                if signal_30m is None:
+                    messages.append("Нет сигнала (30m, недостаточно данных или NaN)")
+                elif signal_30m:
+                    messages.append(f"СИГНАЛ: SELL EURUSD (30m)\nВремя: {last_30m.name}\nEntry: {entry_30m:.5f}\nStop Loss: {sl_30m:.5f}\nTake Profit: {tp_30m:.5f}")
+                    images.append(image_path_30m)
+                else:
+                    messages.append(f"Нет сигнала (30m) | Время: {last_30m.name}")
             except Exception as e:
-                message = f"Ошибка при генерации сигнала: {e}"
-                image_path = None
-            if image_path:
-                with open(image_path, 'rb') as img:
-                    await bot.send_photo(chat_id, photo=img, caption=message)
-            else:
-                await bot.send_message(chat_id, message)
+                messages = [f"Ошибка при генерации сигнала: {e}"]
+                images = []
+            for i, msg in enumerate(messages):
+                if i < len(images) and images[i]:
+                    with open(images[i], 'rb') as img:
+                        await bot.send_photo(chat_id, photo=img, caption=msg)
+                else:
+                    await bot.send_message(chat_id, msg)
         else:
             logging.info(f"Command '{text}' not recognized by any handler.")
 
@@ -299,35 +311,48 @@ def webhook():
 def check_route():
     print("Получен запрос на /check от планировщика.")
     try:
-        signal, entry, sl, tp, last, image_path = generate_signal_and_plot()
-        if signal is None:
-            message = "Нет сигнала (недостаточно данных или NaN)"
-        elif signal:
-            message = f"СИГНАЛ: SELL EURUSD ({TIMEFRAME})\nВремя: {last.name}\nEntry: {entry:.5f}\nStop Loss: {sl:.5f}\nTake Profit: {tp:.5f}"
+        # 5m сигнал
+        signal_5m, entry_5m, sl_5m, tp_5m, last_5m, image_path_5m = generate_signal_and_plot()
+        # 30m сигнал
+        signal_30m, entry_30m, sl_30m, tp_30m, last_30m, image_path_30m, tf_30m = generate_signal_and_plot_30m()
+        messages = []
+        images = []
+        if signal_5m is None:
+            messages.append("Нет сигнала (5m, недостаточно данных или NaN)")
+        elif signal_5m:
+            messages.append(f"СИГНАЛ: SELL EURUSD (5m)\nВремя: {last_5m.name}\nEntry: {entry_5m:.5f}\nStop Loss: {sl_5m:.5f}\nTake Profit: {tp_5m:.5f}")
+            images.append(image_path_5m)
         else:
-            message = f"Нет сигнала | Время: {last.name}"
+            messages.append(f"Нет сигнала (5m) | Время: {last_5m.name}")
+        if signal_30m is None:
+            messages.append("Нет сигнала (30m, недостаточно данных или NaN)")
+        elif signal_30m:
+            messages.append(f"СИГНАЛ: SELL EURUSD (30m)\nВремя: {last_30m.name}\nEntry: {entry_30m:.5f}\nStop Loss: {sl_30m:.5f}\nTake Profit: {tp_30m:.5f}")
+            images.append(image_path_30m)
+        else:
+            messages.append(f"Нет сигнала (30m) | Время: {last_30m.name}")
     except Exception as e:
-        message = f"Ошибка при генерации сигнала: {e}"
-        image_path = None
+        messages = [f"Ошибка при генерации сигнала: {e}"]
+        images = []
 
-    if "СИГНАЛ" in message:
-        print(f"Найден сигнал, рассылаю подписчикам...")
-        subscribers = get_subscribers()
-        async def send_signals():
-            for sub_id in subscribers:
+    # Рассылка
+    subscribers = get_subscribers()
+    async def send_signals():
+        for sub_id in subscribers:
+            for i, msg in enumerate(messages):
                 try:
-                    if image_path:
-                        with open(image_path, 'rb') as img:
-                            await bot.send_photo(sub_id, photo=img, caption=message)
+                    if i < len(images) and images[i]:
+                        with open(images[i], 'rb') as img:
+                            await bot.send_photo(sub_id, photo=img, caption=msg)
                     else:
-                        await bot.send_message(sub_id, message, parse_mode='Markdown')
+                        await bot.send_message(sub_id, msg, parse_mode='Markdown')
                 except Exception as e:
                     print(f"Не удалось отправить сообщение подписчику {sub_id}: {e}")
-        loop = get_background_loop()
-        asyncio.run_coroutine_threadsafe(send_signals(), loop)
-    else:
-        print(message)
-    return message
+    loop = get_background_loop()
+    asyncio.run_coroutine_threadsafe(send_signals(), loop)
+    for msg in messages:
+        print(msg)
+    return '\n\n'.join(messages)
 
 @app.route('/')
 def index():
