@@ -14,14 +14,14 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
-logger = logging.getLogger('integration')
+logger = logging.getLogger('demo_integration')
 
 async def check_signals_and_process():
     """
     Проверяет наличие сигналов и обрабатывает их для демо-счета.
     """
     try:
-        logger.info("Проверка сигналов...")
+        logger.info("Проверка сигналов для демо-счета...")
         
         # Получаем сигналы для обоих таймфреймов
         signal_5m, entry_5m, sl_5m, tp_5m, last_5m, image_path_5m, timeframe_5m = generate_signal_and_plot()
@@ -29,7 +29,7 @@ async def check_signals_and_process():
         
         # Обрабатываем сигнал M5
         if signal_5m:
-            logger.info(f"Получен сигнал M5: SELL EURUSD @ {entry_5m:.5f}")
+            logger.info(f"Получен сигнал M5 для демо-счета: SELL EURUSD @ {entry_5m:.5f}")
             
             # Создаем сделку на демо-счете
             trade = await process_signal(
@@ -43,13 +43,13 @@ async def check_signals_and_process():
             )
             
             if 'error' in trade:
-                logger.error(f"Ошибка при обработке сигнала M5: {trade['error']}")
+                logger.error(f"Ошибка при обработке сигнала M5 для демо-счета: {trade['error']}")
             else:
-                logger.info(f"Сигнал M5 успешно обработан, создана сделка: {trade['id']}")
+                logger.info(f"Сигнал M5 успешно обработан для демо-счета, создана сделка: {trade['id']}")
         
         # Обрабатываем сигнал M30
         if signal_30m:
-            logger.info(f"Получен сигнал M30: SELL EURUSD @ {entry_30m:.5f}")
+            logger.info(f"Получен сигнал M30 для демо-счета: SELL EURUSD @ {entry_30m:.5f}")
             
             # Создаем сделку на демо-счете
             trade = await process_signal(
@@ -63,13 +63,13 @@ async def check_signals_and_process():
             )
             
             if 'error' in trade:
-                logger.error(f"Ошибка при обработке сигнала M30: {trade['error']}")
+                logger.error(f"Ошибка при обработке сигнала M30 для демо-счета: {trade['error']}")
             else:
-                logger.info(f"Сигнал M30 успешно обработан, создана сделка: {trade['id']}")
+                logger.info(f"Сигнал M30 успешно обработан для демо-счета, создана сделка: {trade['id']}")
         
         # Если нет сигналов, проверяем открытые сделки
         if not signal_5m and not signal_30m:
-            logger.info("Нет новых сигналов. Проверка открытых сделок...")
+            logger.info("Нет новых сигналов для демо-счета. Проверка открытых сделок...")
             
             # Получаем текущую цену
             current_price = await get_current_price()
@@ -81,14 +81,14 @@ async def check_signals_and_process():
                 if updated_trades:
                     for trade in updated_trades:
                         if 'error' not in trade:
-                            logger.info(f"Сделка {trade['id']} закрыта с прибылью: ${trade.get('profit', 0):.2f}")
+                            logger.info(f"Сделка {trade['id']} на демо-счете закрыта с прибылью: ${trade.get('profit', 0):.2f}")
                         else:
-                            logger.error(f"Ошибка при обновлении сделки: {trade['error']}")
+                            logger.error(f"Ошибка при обновлении сделки на демо-счете: {trade['error']}")
             else:
-                logger.warning("Не удалось получить текущую цену для проверки открытых сделок")
+                logger.warning("Не удалось получить текущую цену для проверки открытых сделок на демо-счете")
         
     except Exception as e:
-        logger.error(f"Ошибка при проверке сигналов: {e}")
+        logger.error(f"Ошибка при проверке сигналов для демо-счета: {e}")
 
 async def get_current_price() -> Optional[float]:
     """
@@ -103,7 +103,7 @@ async def get_current_price() -> Optional[float]:
             return None
         return data['Close'].iloc[-1]
     except Exception as e:
-        logger.error(f"Ошибка при получении текущей цены: {e}")
+        logger.error(f"Ошибка при получении текущей цены для демо-счета: {e}")
         return None
 
 async def run_periodic_check(interval_seconds: int = 300):
@@ -113,7 +113,7 @@ async def run_periodic_check(interval_seconds: int = 300):
     Args:
         interval_seconds: Интервал между проверками в секундах (по умолчанию 5 минут)
     """
-    logger.info(f"Запуск периодической проверки сигналов с интервалом {interval_seconds} секунд")
+    logger.info(f"Запуск периодической проверки сигналов для демо-счета с интервалом {interval_seconds} секунд")
     
     while True:
         await check_signals_and_process()
@@ -122,7 +122,7 @@ async def run_periodic_check(interval_seconds: int = 300):
 if __name__ == "__main__":
     # Проверяем наличие необходимых переменных окружения
     if not os.environ.get("SUPABASE_URL") or not os.environ.get("SUPABASE_KEY"):
-        logger.error("Не установлены переменные окружения SUPABASE_URL и SUPABASE_KEY")
+        logger.error("Не установлены переменные окружения SUPABASE_URL и SUPABASE_KEY для демо-счета")
         exit(1)
     
     # Запускаем периодическую проверку сигналов
