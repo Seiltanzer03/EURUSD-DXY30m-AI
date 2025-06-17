@@ -11,3 +11,4 @@ setuptools
 Flask
 gunicorn
 matplotlib==3.8.4
+mplfinance==0.12.10b0
