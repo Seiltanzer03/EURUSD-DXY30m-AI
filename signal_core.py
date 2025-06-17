@@ -81,4 +81,51 @@ def generate_signal_and_plot():
             plot_path = 'signal.png'
             fig.savefig(plot_path)
             plt.close(fig)
-    return signal, entry, sl, tp, last, plot_path 
+    return signal, entry, sl, tp, last, plot_path
+
+def generate_signal_and_plot_30m():
+    interval = '30m'
+    period = '4d'  # 4 дня по 30m = ~192 свечи, достаточно для 50 последних
+    timeframe = '30m'
+    data = load_data(period=period, interval=interval)
+    if len(data) < LOOKBACK_PERIOD:
+        return None, None, None, None, None, None
+    last = data.iloc[-1]
+    features = [last['RSI'], last['MACD'], last['MACD_hist'], last['MACD_signal'], last['ATR']]
+    if any(np.isnan(features)):
+        return None, None, None, None, None, None
+    model = joblib.load(MODEL_FILE)
+    win_prob = model.predict_proba([features])[0][1]
+    signal = win_prob >= PREDICTION_THRESHOLD
+    entry = last['Open']
+    sl = entry * (1 + SL_RATIO)
+    tp = entry * (1 - TP_RATIO)
+    plot_path = None
+    if signal:
+        candles = data[~data.index.duplicated(keep='last')].tail(50).copy()
+        if len(candles) < 10:
+            plot_path = None
+        else:
+            candles.index.name = 'Date'
+            addplots = [
+                mpf.make_addplot([entry]*len(candles), color='blue', linestyle='--', width=1, label='Entry'),
+                mpf.make_addplot([sl]*len(candles), color='red', linestyle='--', width=1, label='Stop Loss'),
+                mpf.make_addplot([tp]*len(candles), color='green', linestyle='--', width=1, label='Take Profit'),
+            ]
+            fig, axlist = mpf.plot(
+                candles,
+                type='candle',
+                style='charles',
+                addplot=addplots,
+                returnfig=True,
+                title=f'SELL EURUSD ({timeframe})',
+                ylabel='Price',
+                figsize=(10, 5)
+            )
+            ax = axlist[0]
+            ax.scatter([candles.index[-1]], [entry], color='blue', marker='v', s=100, label='Sell Entry')
+            fig.tight_layout()
+            plot_path = 'signal_30m.png'
+            fig.savefig(plot_path)
+            plt.close(fig)
+    return signal, entry, sl, tp, last, plot_path, timeframe 
