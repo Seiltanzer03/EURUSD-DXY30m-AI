@@ -228,17 +228,22 @@ async def handle_update(update):
                 parts = text.split()
                 if len(parts) > 1:
                     threshold = float(parts[1])
-                
                 logging.info(f"Creating backtest task with threshold {threshold} for chat_id {chat_id}.")
-                # Создаем задачу и сохраняем на нее ссылку
                 task = asyncio.create_task(run_backtest_async(chat_id, threshold))
                 background_tasks.add(task)
                 task.add_done_callback(background_tasks.discard)
                 logging.info(f"Backtest task for chat_id {chat_id} has been created and stored.")
-                
             except (ValueError, IndexError):
                 logging.error("Failed to parse /backtest command.", exc_info=True)
                 await bot.send_message(chat_id, "Неверный формат. Используйте: /backtest [уровень_фильтра], например: /backtest 0.67")
+        elif text == '/check':
+            import subprocess
+            try:
+                output = subprocess.check_output(['python', 'signal_generator.py'], encoding='utf-8')
+                message = output.strip()
+            except Exception as e:
+                message = f"Ошибка при запуске signal_generator.py: {e}"
+            await bot.send_message(chat_id, message)
         else:
             logging.info(f"Command '{text}' not recognized by any handler.")
 
