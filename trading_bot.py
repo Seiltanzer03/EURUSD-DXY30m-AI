@@ -11,6 +11,7 @@ from trading_strategy import run_backtest
 import threading
 import logging
 import subprocess
+import re
 
 # --- 1. Конфигурация и Инициализация ---
 
@@ -198,6 +199,19 @@ async def run_backtest_async(chat_id, threshold):
     except Exception as e:
         await bot.send_message(chat_id, f"❌ Критическая ошибка в задаче бэктеста: {e}")
 
+# Вспомогательная функция для парсинга текста и пути к графику
+def parse_signal_output(output):
+    lines = output.strip().split('\n')
+    message_lines = []
+    image_path = None
+    for line in lines:
+        if line.startswith('GRAPH_PATH:'):
+            image_path = line.split(':', 1)[1].strip()
+        else:
+            message_lines.append(line)
+    message = '\n'.join(message_lines)
+    return message, image_path
+
 async def handle_update(update):
     """Асинхронно обрабатывает входящие сообщения."""
     try:
@@ -240,10 +254,15 @@ async def handle_update(update):
             import subprocess
             try:
                 output = subprocess.check_output(['python', 'signal_generator.py'], encoding='utf-8')
-                message = output.strip()
+                message, image_path = parse_signal_output(output)
             except Exception as e:
                 message = f"Ошибка при запуске signal_generator.py: {e}"
-            await bot.send_message(chat_id, message)
+                image_path = None
+            if image_path:
+                with open(image_path, 'rb') as img:
+                    await bot.send_photo(chat_id, photo=img, caption=message)
+            else:
+                await bot.send_message(chat_id, message)
         else:
             logging.info(f"Command '{text}' not recognized by any handler.")
 
@@ -277,9 +296,10 @@ def check_route():
     print("Получен запрос на /check от планировщика.")
     try:
         output = subprocess.check_output(['python', 'signal_generator.py'], encoding='utf-8')
-        message = output.strip()
+        message, image_path = parse_signal_output(output)
     except Exception as e:
         message = f"Ошибка при запуске signal_generator.py: {e}"
+        image_path = None
 
     if "СИГНАЛ" in message:
         print(f"Найден сигнал, рассылаю подписчикам...")
@@ -287,7 +307,11 @@ def check_route():
         async def send_signals():
             for sub_id in subscribers:
                 try:
-                    await bot.send_message(sub_id, message, parse_mode='Markdown')
+                    if image_path:
+                        with open(image_path, 'rb') as img:
+                            await bot.send_photo(sub_id, photo=img, caption=message)
+                    else:
+                        await bot.send_message(sub_id, message, parse_mode='Markdown')
                 except Exception as e:
                     print(f"Не удалось отправить сообщение подписчику {sub_id}: {e}")
         loop = get_background_loop()
