@@ -5,6 +5,7 @@ import yfinance as yf
 import joblib
 import ssl
 import matplotlib.pyplot as plt
+from signal_core import generate_signal_and_plot, TIMEFRAME
 
 # Отключение SSL-проверки для yfinance
 try:
@@ -17,7 +18,6 @@ else:
 MODEL_FILE = 'ml_model_final_fix.joblib'
 PREDICTION_THRESHOLD = 0.1
 LOOKBACK_PERIOD = 20
-TIMEFRAME = '5m'
 SL_RATIO = 0.004
 TP_RATIO = 0.01
 
@@ -77,7 +77,7 @@ def get_last_signal():
     return signal, entry, sl, tp, last, plot_path
 
 if __name__ == "__main__":
-    signal, entry, sl, tp, last, plot_path = get_last_signal()
+    signal, entry, sl, tp, last, plot_path = generate_signal_and_plot()
     if signal is None:
         print("Нет сигнала (недостаточно данных или NaN)")
     elif signal:
