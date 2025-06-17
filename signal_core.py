@@ -61,10 +61,14 @@ def generate_signal_and_plot():
         else:
             candles = candles.copy()
             candles.index.name = 'Date'
+            entry_line = pd.Series([entry] * len(candles), index=candles.index)
+            sl_line = pd.Series([sl] * len(candles), index=candles.index)
+            tp_line = pd.Series([tp] * len(candles), index=candles.index)
+            
             addplots = [
-                mpf.make_addplot([entry]*len(candles), color='blue', linestyle='--', width=1, label='Entry'),
-                mpf.make_addplot([sl]*len(candles), color='red', linestyle='--', width=1, label='Stop Loss'),
-                mpf.make_addplot([tp]*len(candles), color='green', linestyle='--', width=1, label='Take Profit'),
+                mpf.make_addplot(entry_line, color='blue', linestyle='--', width=1, label='Entry'),
+                mpf.make_addplot(sl_line, color='red', linestyle='--', width=1, label='Stop Loss'),
+                mpf.make_addplot(tp_line, color='green', linestyle='--', width=1, label='Take Profit'),
             ]
             fig, axlist = mpf.plot(
                 candles,
@@ -78,45 +82,55 @@ def generate_signal_and_plot():
             )
             ax = axlist[0]
             ax.scatter([candles.index[-1]], [entry], color='blue', marker='v', s=100, label='Sell Entry')
-            fig.tight_layout()
             plot_path = 'signal.png'
             fig.savefig(plot_path)
             plt.close(fig)
-    return signal, entry, sl, tp, last, plot_path
+    return signal, entry, sl, tp, last, plot_path, TIMEFRAME
 
 def generate_signal_and_plot_30m():
     interval = '30m'
-    period = '4d'  # 4 дня по 30m = ~192 свечи, достаточно для 50 последних
+    period = '4d'
     timeframe = '30m'
-    data = load_data(period=period, interval=interval)
+    
+    try:
+        data = load_data(period=period, interval=interval)
+    except ValueError:
+        return None, None, None, None, None, None, timeframe
+
     if len(data) < LOOKBACK_PERIOD:
-        return None, None, None, None, last, None, timeframe
+        return None, None, None, None, None, None, timeframe
+        
     last = data.iloc[-1]
+    
     # --- SMCStrategy фильтры ---
-    current_hour = last.name.hour  # last.name — это pd.Timestamp
+    current_hour = last.name.hour
     is_trading_time = 13 <= current_hour <= 17
-    if not is_trading_time:
-        return None, None, None, None, last, None, timeframe
+    
     current_index = len(data) - 1
-    if current_index < LOOKBACK_PERIOD:
-        return None, None, None, None, last, None, timeframe
     start_index = current_index - LOOKBACK_PERIOD
     recent_dxy_low = data['DXY_Low'].iloc[start_index:current_index].min()
     dxy_raid = last['DXY_Low'] < recent_dxy_low
     recent_eurusd_high = data['High'].iloc[start_index:current_index].max()
     eurusd_judas_swing = last['High'] > recent_eurusd_high
-    if not (dxy_raid and eurusd_judas_swing):
-        return None, None, None, None, last, None, timeframe
+    
+    # Если фильтры не пройдены, возвращаем False (нет сигнала), а не None (ошибка)
+    if not (is_trading_time and dxy_raid and eurusd_judas_swing):
+        return False, None, None, None, last, None, timeframe
+        
     features = [last['RSI'], last['MACD'], last['MACD_hist'], last['MACD_signal'], last['ATR']]
+    # Если NaN в фичах - это ошибка данных, возвращаем None
     if any(np.isnan(features)):
         return None, None, None, None, last, None, timeframe
+        
     model = joblib.load(MODEL_FILE)
     win_prob = model.predict_proba([features])[0][1]
-    signal = win_prob >= 0.67  # как в бэктесте по умолчанию
+    signal = win_prob >= 0.67
+    
     entry = last['Open']
     sl = entry * (1 + SL_RATIO)
     tp = entry * (1 - TP_RATIO)
     plot_path = None
+    
     if signal:
         candles = data.loc[~data.index.duplicated(keep='last')].tail(50)
         if len(candles) < 10:
@@ -124,10 +138,14 @@ def generate_signal_and_plot_30m():
         else:
             candles = candles.copy()
             candles.index.name = 'Date'
+            entry_line = pd.Series([entry] * len(candles), index=candles.index)
+            sl_line = pd.Series([sl] * len(candles), index=candles.index)
+            tp_line = pd.Series([tp] * len(candles), index=candles.index)
+
             addplots = [
-                mpf.make_addplot([entry]*len(candles), color='blue', linestyle='--', width=1, label='Entry'),
-                mpf.make_addplot([sl]*len(candles), color='red', linestyle='--', width=1, label='Stop Loss'),
-                mpf.make_addplot([tp]*len(candles), color='green', linestyle='--', width=1, label='Take Profit'),
+                mpf.make_addplot(entry_line, color='blue', linestyle='--', width=1, label='Entry'),
+                mpf.make_addplot(sl_line, color='red', linestyle='--', width=1, label='Stop Loss'),
+                mpf.make_addplot(tp_line, color='green', linestyle='--', width=1, label='Take Profit'),
             ]
             fig, axlist = mpf.plot(
                 candles,
@@ -141,10 +159,12 @@ def generate_signal_and_plot_30m():
             )
             ax = axlist[0]
             ax.scatter([candles.index[-1]], [entry], color='blue', marker='v', s=100, label='Sell Entry')
-            fig.tight_layout()
             plot_path = 'signal_30m.png'
             fig.savefig(plot_path)
             plt.close(fig)
-    else:
-        return None, None, None, None, last, None, timeframe
+            
+    # Возвращаем False если сигнал не прошел порог вероятности
+    if not signal:
+        return False, entry, sl, tp, last, None, timeframe
+
     return signal, entry, sl, tp, last, plot_path, timeframe 
