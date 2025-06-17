@@ -14,10 +14,6 @@ import subprocess
 import re
 from signal_core import generate_signal_and_plot, generate_signal_and_plot_30m, TIMEFRAME
 
-# Импортируем модули для демо-счета
-from telegram_demo_account import add_demo_account_handlers
-from webapp import register_demo_blueprint
-
 # --- 1. Конфигурация и Инициализация ---
 
 # Настройка логирования для отладки
@@ -53,9 +49,6 @@ def get_background_loop():
 background_tasks = set()
 
 app = Flask(__name__)
-
-# Регистрируем Blueprint для веб-интерфейса демо-счета
-register_demo_blueprint(app)
 
 # Загрузка секретов из переменных окружения
 TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
@@ -406,62 +399,8 @@ async def send_signals(signal_5m, entry_5m, sl_5m, tp_5m, last_5m, image_path_5m
 @app.route('/')
 def index():
     """Стартовая страница для проверки, что сервис жив."""
-    return "Telegram Bot is running with Demo Account integration!"
-
-# Инициализация демо-аккаунта при запуске
-def init_demo_account():
-    """
-    Инициализирует демо-аккаунт и добавляет обработчики команд к существующему боту.
-    Эта функция должна вызываться при запуске приложения.
-    """
-    try:
-        # Импортируем здесь, чтобы избежать циклических импортов
-        from telegram.ext import Application
-        
-        logging.info("Инициализация демо-аккаунта...")
-        
-        # Создаем приложение с тем же токеном, что и основной бот
-        application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-        
-        # Добавляем обработчики команд демо-счета
-        add_demo_account_handlers(application)
-        
-        logging.info("Демо-аккаунт успешно инициализирован")
-        
-        # Запускаем приложение в режиме polling (в отдельном потоке)
-        def start_polling():
-            application.run_polling(allowed_updates=["message", "callback_query"])
-        
-        # Запускаем в отдельном потоке
-        threading.Thread(target=start_polling, daemon=True).start()
-        
-        return True
-    except Exception as e:
-        logging.error(f"Ошибка при инициализации демо-аккаунта: {e}")
-        return False
-
-# Инициализируем демо-аккаунт при импорте модуля
-demo_account_initialized = False
-
-def initialize_on_startup():
-    """Инициализирует демо-аккаунт при запуске сервера."""
-    global demo_account_initialized
-    if not demo_account_initialized:
-        demo_account_initialized = init_demo_account()
-        if demo_account_initialized:
-            logging.info("Демо-аккаунт успешно инициализирован при запуске")
-        else:
-            logging.error("Не удалось инициализировать демо-аккаунт при запуске")
-
-# Регистрируем функцию, которая будет вызвана после запуска Flask
-@app.before_first_request
-def before_first_request():
-    """Вызывается перед первым запросом к Flask-приложению."""
-    initialize_on_startup()
+    return "Telegram Bot is running!"
 
 if __name__ == "__main__":
-    # Инициализируем демо-аккаунт перед запуском сервера
-    initialize_on_startup()
-    
     # Локальный запуск для отладки. На Render будет использоваться gunicorn.
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000))) 
