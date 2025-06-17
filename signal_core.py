@@ -41,11 +41,11 @@ def load_data(period="2d", interval="5m"):
 def generate_signal_and_plot():
     data = load_data()
     if len(data) < LOOKBACK_PERIOD:
-        return None, None, None, None, None, None
+        return None, None, None, None, None, None, None
     last = data.iloc[-1]
     features = [last['RSI'], last['MACD'], last['MACD_hist'], last['MACD_signal'], last['ATR']]
     if any(np.isnan(features)):
-        return None, None, None, None, None, None
+        return None, None, None, None, None, None, None
     model = joblib.load(MODEL_FILE)
     win_prob = model.predict_proba([features])[0][1]
     signal = win_prob >= PREDICTION_THRESHOLD
