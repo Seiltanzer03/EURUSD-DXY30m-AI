@@ -255,10 +255,6 @@ async def handle_update(update):
             try:
                 # 5-минутный таймфрейм
                 signal_5m, entry_5m, sl_5m, tp_5m, last_5m, image_path_5m, timeframe_5m = generate_signal_and_plot()
-                signal_30m, entry_30m, sl_30m, tp_30m, last_30m, image_path_30m, tf_30m = generate_signal_and_plot_30m()
-
-                message_parts = []
-
                 if signal_5m:
                     message_5m = (
                         f"🚨 СИГНАЛ (M5) 🚨\n"
@@ -268,22 +264,42 @@ async def handle_update(update):
                         f"SL: {sl_5m:.5f}\n"
                         f"TP: {tp_5m:.5f}"
                     )
-                    message_parts.append(message_5m)
+                    if image_path_5m and os.path.exists(image_path_5m):
+                        with open(image_path_5m, 'rb') as img:
+                            await bot.send_photo(chat_id, photo=img, caption=message_5m)
+                    else:
+                        await bot.send_message(chat_id, message_5m)
                 else:
-                    message_parts.append(f"Нет сигнала на M5. Время: {last_5m.name.strftime('%Y-%m-%d %H:%M:%S UTC') if last_5m is not None else 'N/A'}")
+                    message_5m = f"Нет сигнала на M5. Время: {last_5m.name.strftime('%Y-%m-%d %H:%M:%S UTC') if last_5m is not None else 'N/A'}"
+                    await bot.send_message(chat_id, message_5m)
+
+                # 30-минутный таймфрейм
+                signal_30m, entry_30m, sl_30m, tp_30m, last_30m, image_path_30m, tf_30m = generate_signal_and_plot_30m()
                 if signal_30m:
-                    message_parts.append(f"🚨 СИГНАЛ (M30) 🚨\nSELL EURUSD\nTime: {last_30m.name.strftime('%Y-%m-%d %H:%M:%S UTC')}\nEntry: {entry_30m:.5f}\nSL: {sl_30m:.5f}\nTP: {tp_30m:.5f}")
+                    message_30m = (
+                        f"🚨 СИГНАЛ (M30) 🚨\n"
+                        f"SELL EURUSD\n"
+                        f"Time: {last_30m.name.strftime('%Y-%m-%d %H:%M:%S UTC')}\n"
+                        f"Entry: {entry_30m:.5f}\n"
+                        f"SL: {sl_30m:.5f}\n"
+                        f"TP: {tp_30m:.5f}"
+                    )
+                    if image_path_30m and os.path.exists(image_path_30m):
+                        with open(image_path_30m, 'rb') as img:
+                            await bot.send_photo(chat_id, photo=img, caption=message_30m)
+                    else:
+                        await bot.send_message(chat_id, message_30m)
                 else:
-                    message_parts.append(f"Нет сигнала на M30. Время: {last_30m.name.strftime('%Y-%m-%d %H:%M:%S UTC') if last_30m is not None else 'N/A'}")
+                    message_30m = f"Нет сигнала на M30. Время: {last_30m.name.strftime('%Y-%m-%d %H:%M:%S UTC') if last_30m is not None else 'N/A'}"
+                    await bot.send_message(chat_id, message_30m)
+
             except Exception as e:
-                message_parts = [f"Ошибка при генерации сигнала: {e}"]
-            for msg in message_parts:
-                await bot.send_message(chat_id, msg)
+                await bot.send_message(chat_id, f"Ошибка при генерации сигнала: {e}")
         else:
             logging.info(f"Command '{text}' not recognized by any handler.")
 
-    except Exception:
-        logging.error("An unhandled exception occurred in handle_update.", exc_info=True)
+    except Exception as e:
+        logging.error(f"An error occurred in handle_update: {e}", exc_info=True)
 
 # --- 4. Веб-сервер и Роуты ---
 @app.route('/webhook', methods=['POST'])
@@ -333,35 +349,52 @@ def check_route():
         # asyncio.run(bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=f"Ошибка в /check: {e}"))
         return f"Ошибка: {e}", 500
 
-async def send_signals(signal_5m, entry_5m, sl_5m, tp_5m, last_5m, image_path_5m, 
+async def send_signals(signal_5m, entry_5m, sl_5m, tp_5m, last_5m, image_path_5m,
                        signal_30m, entry_30m, sl_30m, tp_30m, last_30m, image_path_30m, timeframe_30m):
     """Асинхронно рассылает сигналы подписчикам."""
     subscribers = get_subscribers()
     if not subscribers:
         print("Нет подписчиков для рассылки.")
         return
-    messages = []
-    images = []
-    if signal_5m:
-        messages.append(f"🚨 СИГНАЛ (M5) 🚨\nSELL EURUSD\nTime: {last_5m.name.strftime('%Y-%m-%d %H:%M:%S UTC')}\nEntry: {entry_5m:.5f}\nSL: {sl_5m:.5f}\nTP: {tp_5m:.5f}")
-        images.append(image_path_5m)
-    else:
-        messages.append(f"Нет сигнала на M5. Время: {last_5m.name.strftime('%Y-%m-%d %H:%M:%S UTC') if last_5m is not None else 'N/A'}")
-    if signal_30m:
-        messages.append(f"🚨 СИГНАЛ (M30) 🚨\nSELL EURUSD\nTime: {last_30m.name.strftime('%Y-%m-%d %H:%M:%S UTC')}\nEntry: {entry_30m:.5f}\nSL: {sl_30m:.5f}\nTP: {tp_30m:.5f}")
-        images.append(image_path_30m)
-    else:
-        messages.append(f"Нет сигнала на M30. Время: {last_30m.name.strftime('%Y-%m-%d %H:%M:%S UTC') if last_30m is not None else 'N/A'}")
+
     for sub_id in subscribers:
-        for i, msg in enumerate(messages):
+        # Рассылка сигнала M5
+        if signal_5m:
+            message_5m = (
+                f"🚨 СИГНАЛ (M5) 🚨\n"
+                f"SELL EURUSD\n"
+                f"Time: {last_5m.name.strftime('%Y-%m-%d %H:%M:%S UTC')}\n"
+                f"Entry: {entry_5m:.5f}\n"
+                f"SL: {sl_5m:.5f}\n"
+                f"TP: {tp_5m:.5f}"
+            )
             try:
-                if i < len(images) and images[i]:
-                    with open(images[i], 'rb') as img:
-                        await bot.send_photo(sub_id, photo=img, caption=msg)
+                if image_path_5m and os.path.exists(image_path_5m):
+                    with open(image_path_5m, 'rb') as img:
+                        await bot.send_photo(sub_id, photo=img, caption=message_5m)
                 else:
-                    await bot.send_message(sub_id, msg, parse_mode='Markdown')
+                    await bot.send_message(sub_id, message_5m)  # Отправка без картинки если что-то не так
             except Exception as e:
-                print(f"Не удалось отправить сообщение подписчику {sub_id}: {e}")
+                logging.error(f"Не удалось отправить M5 сигнал подписчику {sub_id}: {e}")
+
+        # Рассылка сигнала M30
+        if signal_30m:
+            message_30m = (
+                f"🚨 СИГНАЛ (M30) 🚨\n"
+                f"SELL EURUSD\n"
+                f"Time: {last_30m.name.strftime('%Y-%m-%d %H:%M:%S UTC')}\n"
+                f"Entry: {entry_30m:.5f}\n"
+                f"SL: {sl_30m:.5f}\n"
+                f"TP: {tp_30m:.5f}"
+            )
+            try:
+                if image_path_30m and os.path.exists(image_path_30m):
+                    with open(image_path_30m, 'rb') as img:
+                        await bot.send_photo(sub_id, photo=img, caption=message_30m)
+                else:
+                    await bot.send_message(sub_id, message_30m)  # Отправка без картинки если что-то не так
+            except Exception as e:
+                logging.error(f"Не удалось отправить M30 сигнал подписчику {sub_id}: {e}")
 
 @app.route('/')
 def index():
