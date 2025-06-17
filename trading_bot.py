@@ -10,6 +10,7 @@ import asyncio
 from trading_strategy import run_backtest
 import threading
 import logging
+import subprocess
 
 # --- 1. Конфигурация и Инициализация ---
 
@@ -267,28 +268,28 @@ def webhook():
 
 @app.route('/check', methods=['GET'])
 def check_route():
-    """Запускает проверку сигнала (для UptimeRobot)."""
+    """Запускает проверку сигнала (для UptimeRobot). Теперь используется signal_generator.py."""
     print("Получен запрос на /check от планировщика.")
-    message = check_for_signal()
-    
-    if "СИГНАЛ НА ПРОДАЖУ" in message:
+    try:
+        output = subprocess.check_output(['python', 'signal_generator.py'], encoding='utf-8')
+        message = output.strip()
+    except Exception as e:
+        message = f"Ошибка при запуске signal_generator.py: {e}"
+
+    if "СИГНАЛ" in message:
         print(f"Найден сигнал, рассылаю подписчикам...")
         subscribers = get_subscribers()
-        
         async def send_signals():
             for sub_id in subscribers:
                 try:
                     await bot.send_message(sub_id, message, parse_mode='Markdown')
                 except Exception as e:
                     print(f"Не удалось отправить сообщение подписчику {sub_id}: {e}")
-
-        # Отправляем coroutine на выполнение в фоновый поток
         loop = get_background_loop()
         asyncio.run_coroutine_threadsafe(send_signals(), loop)
     else:
-        print(message) # Выводим в лог "Нет сигналов" или "Рынок закрыт"
-        
-    return message # Возвращаем статус для UptimeRobot
+        print(message)
+    return message
 
 @app.route('/')
 def index():
