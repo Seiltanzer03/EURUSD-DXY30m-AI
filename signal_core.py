@@ -55,6 +55,8 @@ def generate_signal_and_plot():
     plot_path = None
     if signal:
         candles = data[~data.index.duplicated(keep='last')].tail(50).copy()
+        # Оставляем только OHLCV для корректного графика
+        candles = candles[['Open', 'High', 'Low', 'Close', 'Volume']]
         if len(candles) < 10:
             warnings.warn('Недостаточно данных для построения графика (меньше 10 свечей)')
             plot_path = None
@@ -89,20 +91,37 @@ def generate_signal_and_plot_30m():
     timeframe = '30m'
     data = load_data(period=period, interval=interval)
     if len(data) < LOOKBACK_PERIOD:
-        return None, None, None, None, None, None
+        return None, None, None, None, None, None, timeframe
     last = data.iloc[-1]
+    # --- SMCStrategy фильтры ---
+    current_hour = last.name.hour  # last.name — это pd.Timestamp
+    is_trading_time = 13 <= current_hour <= 17
+    if not is_trading_time:
+        return None, None, None, None, last, None, timeframe
+    current_index = len(data) - 1
+    if current_index < LOOKBACK_PERIOD:
+        return None, None, None, None, last, None, timeframe
+    start_index = current_index - LOOKBACK_PERIOD
+    recent_dxy_low = data['DXY_Low'].iloc[start_index:current_index].min()
+    dxy_raid = last['DXY_Low'] < recent_dxy_low
+    recent_eurusd_high = data['High'].iloc[start_index:current_index].max()
+    eurusd_judas_swing = last['High'] > recent_eurusd_high
+    if not (dxy_raid and eurusd_judas_swing):
+        return None, None, None, None, last, None, timeframe
     features = [last['RSI'], last['MACD'], last['MACD_hist'], last['MACD_signal'], last['ATR']]
     if any(np.isnan(features)):
-        return None, None, None, None, None, None
+        return None, None, None, None, last, None, timeframe
     model = joblib.load(MODEL_FILE)
     win_prob = model.predict_proba([features])[0][1]
-    signal = win_prob >= PREDICTION_THRESHOLD
+    signal = win_prob >= 0.67  # как в бэктесте по умолчанию
     entry = last['Open']
     sl = entry * (1 + SL_RATIO)
     tp = entry * (1 - TP_RATIO)
     plot_path = None
     if signal:
         candles = data[~data.index.duplicated(keep='last')].tail(50).copy()
+        # Оставляем только OHLCV для корректного графика
+        candles = candles[['Open', 'High', 'Low', 'Close', 'Volume']]
         if len(candles) < 10:
             plot_path = None
         else:
@@ -128,4 +147,6 @@ def generate_signal_and_plot_30m():
             plot_path = 'signal_30m.png'
             fig.savefig(plot_path)
             plt.close(fig)
+    else:
+        return None, None, None, None, last, None, timeframe
     return signal, entry, sl, tp, last, plot_path, timeframe 
