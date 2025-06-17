@@ -43,7 +43,7 @@ def load_data(period="2d", interval="5m"):
     data = eurusd.join(dxy_low)
 
     # Заполняем возможные пропуски в данных DXY предыдущими значениями
-    data['DXY_Low'].fillna(method='ffill', inplace=True)
+    data['DXY_Low'] = data['DXY_Low'].ffill()
 
     # Удаляем строки, где остались NaN (в основном, в начале из-за расчета индикаторов)
     data.dropna(inplace=True)
