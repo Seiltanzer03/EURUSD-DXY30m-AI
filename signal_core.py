@@ -54,13 +54,12 @@ def generate_signal_and_plot():
     tp = entry * (1 - TP_RATIO)
     plot_path = None
     if signal:
-        candles = data[~data.index.duplicated(keep='last')].tail(50).copy()
-        # Оставляем только OHLCV для корректного графика
-        candles = candles[['Open', 'High', 'Low', 'Close', 'Volume']]
+        candles = data.loc[~data.index.duplicated(keep='last')].tail(50)
         if len(candles) < 10:
-            warnings.warn('Недостаточно данных для построения графика (меньше 10 свечей)')
+            warnings.warn(f'Недостаточно данных для построения графика ({len(candles)} < 10)')
             plot_path = None
         else:
+            candles = candles.copy()
             candles.index.name = 'Date'
             addplots = [
                 mpf.make_addplot([entry]*len(candles), color='blue', linestyle='--', width=1, label='Entry'),
@@ -91,7 +90,7 @@ def generate_signal_and_plot_30m():
     timeframe = '30m'
     data = load_data(period=period, interval=interval)
     if len(data) < LOOKBACK_PERIOD:
-        return None, None, None, None, None, None, timeframe
+        return None, None, None, None, last, None, timeframe
     last = data.iloc[-1]
     # --- SMCStrategy фильтры ---
     current_hour = last.name.hour  # last.name — это pd.Timestamp
@@ -119,12 +118,11 @@ def generate_signal_and_plot_30m():
     tp = entry * (1 - TP_RATIO)
     plot_path = None
     if signal:
-        candles = data[~data.index.duplicated(keep='last')].tail(50).copy()
-        # Оставляем только OHLCV для корректного графика
-        candles = candles[['Open', 'High', 'Low', 'Close', 'Volume']]
+        candles = data.loc[~data.index.duplicated(keep='last')].tail(50)
         if len(candles) < 10:
             plot_path = None
         else:
+            candles = candles.copy()
             candles.index.name = 'Date'
             addplots = [
                 mpf.make_addplot([entry]*len(candles), color='blue', linestyle='--', width=1, label='Entry'),
