@@ -4,6 +4,7 @@ import numpy as np
 import yfinance as yf
 import joblib
 import ssl
+import matplotlib.pyplot as plt
 
 # Отключение SSL-проверки для yfinance
 try:
@@ -16,6 +17,9 @@ else:
 MODEL_FILE = 'ml_model_final_fix.joblib'
 PREDICTION_THRESHOLD = 0.1
 LOOKBACK_PERIOD = 20
+TIMEFRAME = '5m'
+SL_RATIO = 0.004
+TP_RATIO = 0.01
 
 
 def flatten_multiindex_columns(df):
@@ -43,21 +47,42 @@ def load_data(period="2d", interval="5m"):
 def get_last_signal():
     data = load_data()
     if len(data) < LOOKBACK_PERIOD:
-        return None, None, None
+        return None, None, None, None
     last = data.iloc[-1]
     features = [last['RSI'], last['MACD'], last['MACD_hist'], last['MACD_signal'], last['ATR']]
     if any(np.isnan(features)):
-        return None, None, None
+        return None, None, None, None
     model = joblib.load(MODEL_FILE)
     win_prob = model.predict_proba([features])[0][1]
     signal = win_prob >= PREDICTION_THRESHOLD
-    return signal, win_prob, last
+    entry = last['Open']
+    sl = entry * (1 + SL_RATIO)
+    tp = entry * (1 - TP_RATIO)
+    # Генерация графика, если есть сигнал
+    plot_path = None
+    if signal:
+        plt.figure(figsize=(10, 5))
+        candles = data[-100:]
+        plt.plot(candles.index, candles['Close'], label='Close', color='black')
+        plt.axhline(entry, color='blue', linestyle='--', label='Entry')
+        plt.axhline(sl, color='red', linestyle='--', label='Stop Loss')
+        plt.axhline(tp, color='green', linestyle='--', label='Take Profit')
+        plt.scatter([last.name], [entry], color='blue', marker='v', s=100, label='Sell Entry')
+        plt.legend()
+        plt.title(f'SELL EURUSD ({TIMEFRAME})')
+        plt.tight_layout()
+        plot_path = 'signal.png'
+        plt.savefig(plot_path)
+        plt.close()
+    return signal, entry, sl, tp, last, plot_path
 
 if __name__ == "__main__":
-    signal, win_prob, last = get_last_signal()
+    signal, entry, sl, tp, last, plot_path = get_last_signal()
     if signal is None:
         print("Нет сигнала (недостаточно данных или NaN)")
     elif signal:
-        print(f"СИГНАЛ: SELL EURUSD | Вероятность: {win_prob:.2%} | Время: {last.name}")
+        print(f"СИГНАЛ: SELL EURUSD ({TIMEFRAME})\nВремя: {last.name}\nEntry: {entry:.5f}\nStop Loss: {sl:.5f}\nTake Profit: {tp:.5f}")
+        if plot_path:
+            print(f"GRAPH_PATH: {plot_path}")
     else:
-        print(f"Нет сигнала | Вероятность: {win_prob:.2%} | Время: {last.name}") 
+        print(f"Нет сигнала | Время: {last.name}") 
