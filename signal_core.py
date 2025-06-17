@@ -22,33 +22,53 @@ def flatten_multiindex_columns(df):
     return df
 
 def load_data(period="2d", interval="5m"):
+    # 1. Загрузка данных
     eurusd = yf.download('EURUSD=X', period=period, interval=interval, auto_adjust=True)
     dxy = yf.download('DX-Y.NYB', period=period, interval=interval, auto_adjust=True)
+    
     eurusd = flatten_multiindex_columns(eurusd)
     dxy = flatten_multiindex_columns(dxy)
     if eurusd.empty or dxy.empty:
         raise ValueError('Нет данных для EURUSD или DXY')
 
-    # Рассчитываем индикаторы на основном датафрейме (EURUSD)
-    eurusd.ta.rsi(length=14, append=True)
-    eurusd.ta.macd(fast=12, slow=26, signal=9, append=True)
-    eurusd.ta.atr(length=14, append=True)
-    eurusd.rename(columns={'RSI_14':'RSI', 'MACD_12_26_9':'MACD', 'MACDh_12_26_9':'MACD_hist', 'MACDs_12_26_9':'MACD_signal', 'ATRr_14':'ATR'}, inplace=True)
+    # 2. Подготовка к объединению
+    # Сбрасываем индекс, чтобы временная метка стала обычным столбцом
+    eurusd.reset_index(inplace=True)
+    dxy.reset_index(inplace=True)
+    
+    # Убеждаемся, что столбцы с датой/временем называются одинаково
+    eurusd_date_col = next((col for col in ['Datetime', 'Date', 'index'] if col in eurusd.columns), None)
+    dxy_date_col = next((col for col in ['Datetime', 'Date', 'index'] if col in dxy.columns), None)
+    if not eurusd_date_col or not dxy_date_col:
+        raise ValueError("Не удалось найти столбец с датой/временем в данных yfinance.")
+    eurusd.rename(columns={eurusd_date_col: 'Datetime'}, inplace=True)
+    dxy.rename(columns={dxy_date_col: 'Datetime'}, inplace=True)
 
-    # Готовим данные DXY для объединения
-    dxy_low = dxy[['Low']].rename(columns={'Low': 'DXY_Low'})
-
-    # Объединяем данные, используя индекс EURUSD как основной.
-    # Это предотвращает потерю данных из-за несовпадения времени.
-    data = eurusd.join(dxy_low)
-
-    # Заполняем возможные пропуски в данных DXY предыдущими значениями
-    data['DXY_Low'] = data['DXY_Low'].ffill()
-
-    # Удаляем строки, где остались NaN (в основном, в начале из-за расчета индикаторов)
+    # 3. Надежное объединение данных по ближайшему времени
+    # Это решает проблему неточного совпадения временных меток
+    data = pd.merge_asof(
+        eurusd.sort_values('Datetime'),
+        dxy[['Datetime', 'Low']].rename(columns={'Low': 'DXY_Low'}).sort_values('Datetime'),
+        on='Datetime',
+        direction='backward'  # Используем последнее известное значение DXY
+    )
+    
+    # 4. Установка индекса и расчет индикаторов
+    data.set_index('Datetime', inplace=True)
+    
+    data.ta.rsi(length=14, append=True)
+    data.ta.macd(fast=12, slow=26, signal=9, append=True)
+    data.ta.atr(length=14, append=True)
+    data.rename(columns={'RSI_14':'RSI', 'MACD_12_26_9':'MACD', 'MACDh_12_26_9':'MACD_hist', 'MACDs_12_26_9':'MACD_signal', 'ATRr_14':'ATR'}, inplace=True)
+    
+    # 5. Очистка и обработка временной зоны
     data.dropna(inplace=True)
     
-    data.index = data.index.tz_convert('UTC')
+    if data.index.tz is None:
+        data = data.tz_localize('UTC')
+    else:
+        data = data.tz_convert('UTC')
+        
     return data
 
 def generate_signal_and_plot():
