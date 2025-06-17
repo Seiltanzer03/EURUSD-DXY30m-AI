@@ -28,13 +28,26 @@ def load_data(period="2d", interval="5m"):
     dxy = flatten_multiindex_columns(dxy)
     if eurusd.empty or dxy.empty:
         raise ValueError('Нет данных для EURUSD или DXY')
+
+    # Рассчитываем индикаторы на основном датафрейме (EURUSD)
     eurusd.ta.rsi(length=14, append=True)
     eurusd.ta.macd(fast=12, slow=26, signal=9, append=True)
     eurusd.ta.atr(length=14, append=True)
     eurusd.rename(columns={'RSI_14':'RSI', 'MACD_12_26_9':'MACD', 'MACDh_12_26_9':'MACD_hist', 'MACDs_12_26_9':'MACD_signal', 'ATRr_14':'ATR'}, inplace=True)
-    dxy = dxy.rename(columns={'Low': 'DXY_Low'})
-    data = pd.concat([eurusd, dxy['DXY_Low']], axis=1)
+
+    # Готовим данные DXY для объединения
+    dxy_low = dxy[['Low']].rename(columns={'Low': 'DXY_Low'})
+
+    # Объединяем данные, используя индекс EURUSD как основной.
+    # Это предотвращает потерю данных из-за несовпадения времени.
+    data = eurusd.join(dxy_low)
+
+    # Заполняем возможные пропуски в данных DXY предыдущими значениями
+    data['DXY_Low'].fillna(method='ffill', inplace=True)
+
+    # Удаляем строки, где остались NaN (в основном, в начале из-за расчета индикаторов)
     data.dropna(inplace=True)
+    
     data.index = data.index.tz_convert('UTC')
     return data
 
@@ -71,7 +84,7 @@ def generate_signal_and_plot():
                 mpf.make_addplot(tp_line, color='green', linestyle='--', width=1, label='Take Profit'),
             ]
             fig, axlist = mpf.plot(
-                candles,
+                candles[['Open', 'High', 'Low', 'Close']],
                 type='candle',
                 style='charles',
                 addplot=addplots,
@@ -148,7 +161,7 @@ def generate_signal_and_plot_30m():
                 mpf.make_addplot(tp_line, color='green', linestyle='--', width=1, label='Take Profit'),
             ]
             fig, axlist = mpf.plot(
-                candles,
+                candles[['Open', 'High', 'Low', 'Close']],
                 type='candle',
                 style='charles',
                 addplot=addplots,
