@@ -131,7 +131,7 @@ class SMCStrategyM5(Strategy):
             entry_price = entry_bar['Open']
             sl_price = entry_price * (1 + self.sl_ratio)
             tp_price = entry_price * (1 - self.tp_ratio)
-            self.sell(sl=sl_price, tp=tp_price)
+            self.sell(size=0.99, sl=sl_price, tp=tp_price)
 
 def load_data_from_yfinance(ticker, period="7d", interval="30m"):
     """Загружает данные из Yahoo Finance и обрабатывает возможный MultiIndex."""
@@ -167,8 +167,13 @@ def run_backtest(threshold=0.55):
     eurusd_data.ta.atr(length=14, append=True)
     eurusd_data.rename(columns={'RSI_14':'RSI', 'MACD_12_26_9':'MACD', 'MACDh_12_26_9':'MACD_hist', 'MACDs_12_26_9':'MACD_signal', 'ATRr_14':'ATR'}, inplace=True)
     
+    # Надежное объединение данных
     dxy_data_renamed = dxy_data.rename(columns={'Low': 'DXY_Low'})
-    data = pd.concat([eurusd_data, dxy_data_renamed['DXY_Low']], axis=1)
+    data = pd.merge_asof(
+        eurusd_data.sort_index(),
+        dxy_data_renamed[['DXY_Low']].sort_index(),
+        left_index=True, right_index=True, direction='backward'
+    )
     data.dropna(inplace=True)
 
     # 3. Загрузка модели
@@ -212,7 +217,11 @@ def run_backtest_m5():
 
     # 2. Объединение данных
     dxy_data_renamed = dxy_data.rename(columns={'Low': 'DXY_Low'})
-    data = pd.concat([eurusd_data, dxy_data_renamed['DXY_Low']], axis=1)
+    data = pd.merge_asof(
+        eurusd_data.sort_index(),
+        dxy_data_renamed[['DXY_Low']].sort_index(),
+        left_index=True, right_index=True, direction='backward'
+    )
     data.dropna(inplace=True)
     
     if data.empty:
@@ -317,8 +326,12 @@ def generate_features_for_backtest(eurusd_csv, dxy_csv):
         'MACDs_12_26_9':'MACD_signal', 'ATRr_14':'ATR'
     }, inplace=True)
 
-    # Объединение
-    data = pd.concat([eurusd_data, dxy_data[['DXY_Low']]], axis=1)
+    # Надежное объединение данных
+    data = pd.merge_asof(
+        eurusd_data.sort_index(),
+        dxy_data[['DXY_Low']].sort_index(),
+        left_index=True, right_index=True, direction='backward'
+    )
     data.dropna(inplace=True)
     
     return data
