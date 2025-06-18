@@ -7,7 +7,7 @@ import yfinance as yf
 import telegram
 from flask import Flask, request
 import asyncio
-from trading_strategy import run_backtest, run_backtest_local
+from trading_strategy import run_backtest, run_backtest_local, run_backtest_m5
 import threading
 import logging
 import re
@@ -285,7 +285,7 @@ async def run_backtest_local_async(chat_id, threshold):
             await bot.send_message(chat_id, f"❌ Ошибка: Не найдены файлы для бэктеста. Убедитесь, что `{eurusd_file}` и `{dxy_file}` находятся в директории проекта.")
             return
 
-        stats, plot_file = await asyncio.to_thread(
+        stats, data, plot_file = await asyncio.to_thread(
             run_backtest_local, 
             eurusd_file, 
             dxy_file,
@@ -362,207 +362,74 @@ async def check_and_send_signals_to_chat(chat_id):
         logging.error(f"Ошибка при проверке и отправке сигналов: {e}")
         await bot.send_message(chat_id, f"Произошла ошибка: {e}")
 
-def plot_m5_signals(data, signals, trades, filename):
-    """Рисует график цены, сигналов и сделок M5."""
-    try:
-        plt.style.use('dark_background')
-        fig, ax = plt.subplots(figsize=(20, 10), dpi=200)
-
-        # График цены
-        ax.plot(data.index, data.Close, label='EURUSD Close 5m', color='lightgray', alpha=0.7, linewidth=1)
-
-        # Отмечаем все сигналы (точки входа)
-        if signals:
-            signal_times = [s['time'] for s in signals]
-            signal_prices = [s['entry'] for s in signals]
-            ax.plot(signal_times, signal_prices, 'v', color='yellow', markersize=6, label='Все сигналы (входы)', linestyle='None', alpha=0.7)
-
-        # Отмечаем сделки (входы и выходы)
-        if trades:
-            win_trades = [t for t in trades if t['pnl'] > 0]
-            loss_trades = [t for t in trades if t['pnl'] <= 0]
-            
-            # Входы
-            ax.plot([t['entry_time'] for t in win_trades], [t['entry_price'] for t in win_trades], 'v', color='#00e676', markersize=8, label='Прибыльный вход', linestyle='None')
-            ax.plot([t['entry_time'] for t in loss_trades], [t['entry_price'] for t in loss_trades], 'v', color='#ff4d4d', markersize=8, label='Убыточный вход', linestyle='None')
-            
-            # Выходы
-            ax.plot([t['exit_time'] for t in win_trades], [t['exit_price'] for t in win_trades], '^', color='white', markersize=7, label='Выход (TP)', linestyle='None')
-            ax.plot([t['exit_time'] for t in loss_trades], [t['exit_price'] for t in loss_trades], '^', color='white', markersize=7, label='Выход (SL)', linestyle='None')
-            
-            # Линии, соединяющие вход и выход
-            for t in trades:
-                color = '#00e676' if t['pnl'] > 0 else '#ff4d4d'
-                ax.plot([t['entry_time'], t['exit_time']], [t['entry_price'], t['exit_price']], color=color, linestyle='--', linewidth=0.8, alpha=0.8)
-
-
-        ax.set_title(f'Бэктест M5 сигналов за последние {len(data.index.dayofyear.unique())} дней', fontsize=16)
-        ax.set_ylabel('Цена')
-        ax.grid(True, linestyle=':', alpha=0.3)
-        ax.legend()
-        fig.autofmt_xdate()
-        
-        plt.tight_layout()
-        plt.savefig(filename, bbox_inches='tight', format='pdf')
-        plt.close(fig)
-        return filename
-    except Exception as e:
-        logging.error(f"Ошибка при создании графика M5 сигналов: {e}")
-        return None
-
 async def backtest_m5(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Запускает бэктест пятиминутного SMC сигнала, отправляет PDF-отчет и PNG-изображения последних 5 сигналов."""
-    chat_id = update.message.chat.id
-    await bot.send_message(chat_id, '▶️ Запускаю бэктест M5 за последние 30 дней. Это может занять до минуты...')
-    
+    """Запускает бэктест M5, отправляет PDF-отчет и PNG-изображения для ПОСЛЕДНИХ 5 сделок."""
+    chat_id = update.message.chat_id
+    await bot.send_message(chat_id, '▶️ Запускаю бэктест M5 за последние 30 дней. Генерирую отчет и изображения сделок...')
+
     try:
-        LOOKBACK = 12
-        START_HOUR = 13
-        END_HOUR = 17
-        SL_RATIO = 0.002
-        TP_RATIO = 0.005
-        
-        data = await asyncio.to_thread(load_data, period='30d', interval='5m')
-        
-        signals = []
-        for i in range(LOOKBACK + 2, len(data)):
-            last_bar = data.iloc[i-2]
-            entry_bar = data.iloc[i-1]
-            future_bars = data.iloc[i:]
-            previous_bars = data.iloc[i-(LOOKBACK+2):i-2]
-            
-            is_trading_time = START_HOUR <= last_bar.name.hour <= END_HOUR
-            dxy_raid = last_bar['DXY_Low'] < previous_bars['DXY_Low'].min()
-            eurusd_judas_swing = last_bar['High'] > previous_bars['High'].max()
-            
-            if is_trading_time and dxy_raid and eurusd_judas_swing:
-                entry_price = entry_bar['Open']
-                sl_price = entry_price * (1 + SL_RATIO)
-                tp_price = entry_price * (1 - TP_RATIO)
-                
-                signals.append({
-                    'time': entry_bar.name,
-                    'entry': entry_price,
-                    'sl': sl_price,
-                    'tp': tp_price,
-                    'future_bars': future_bars # Сохраняем будущие бары для симуляции
-                })
+        stats, data, plot_filename = await asyncio.to_thread(run_backtest_m5)
 
-        # --- Симуляция сделок ---
-        trades = []
-        for s in signals:
-            exit_price, exit_time, reason = (None, None, "Не закрыта")
-            for _, bar in s['future_bars'].iterrows():
-                # Проверка SL
-                if bar['High'] >= s['sl']:
-                    exit_price, exit_time, reason = (s['sl'], bar.name, "SL")
-                    break
-                # Проверка TP
-                if bar['Low'] <= s['tp']:
-                    exit_price, exit_time, reason = (s['tp'], bar.name, "TP")
-                    break
-            
-            if exit_price is not None:
-                pnl = (s['entry'] - exit_price) # Для шорта
-                trades.append({
-                    'entry_time': s['time'],
-                    'entry_price': s['entry'],
-                    'exit_time': exit_time,
-                    'exit_price': exit_price,
-                    'pnl': pnl,
-                    'sl': s['sl'],
-                    'tp': s['tp'],
-                    'reason': reason
-                })
+        if isinstance(stats, str):
+            await bot.send_message(chat_id, f"❌ Ошибка при выполнении M5 бэктеста: {stats}")
+            return
 
-        # --- 1. Текстовый отчет со статистикой ---
-        total_trades = len(trades)
-        win_trades = sum(1 for t in trades if t['pnl'] > 0)
-        win_rate = (win_trades / total_trades * 100) if total_trades > 0 else 0
-        total_pnl = sum(t['pnl'] for t in trades)
+        trades = stats['_trades']
+        if not trades.empty:
+            last_trades = trades.tail(5)
+            await bot.send_message(chat_id, f"🖼️ Найдено {len(trades)} сделок. Генерирую изображения для последних {len(last_trades)}...")
 
-        msg = (
-            f'✅ *Отчет по бэктесту M5 (SMC)*\n\n'
-            f'Найдено сигналов за 30 дней: `{len(signals)}`\n'
-            f'Проведено сделок (закрытых): `{total_trades}`\n\n'
-            f'*Статистика:*\n'
-            f'  - Процент прибыльных: `{win_rate:.2f}%` ({win_trades} из {total_trades})\n'
-            f'  - Итоговый PnL (в пунктах): `{total_pnl:.5f}`\n\n'
-        )
+            media_group, opened_files, image_paths_to_delete = [], [], []
 
-        if trades:
-            msg += f'Далее будут отправлены изображения последних {min(5, len(trades))} сделок и общий PDF отчет.'
-        else:
-            msg += 'Закрытых сделок для отображения нет.'
-        await bot.send_message(chat_id, msg, parse_mode='Markdown')
-
-        # --- 2. Изображения последних 5 сделок ---
-        if trades:
-            last_trades = trades[-5:]
-            media_group = []
-            opened_files = []
-            image_paths_to_delete = []
-
-            await bot.send_message(chat_id, f"🖼️ Генерирую изображения для {len(last_trades)} последних сделок...")
-
-            for i, trade_info in enumerate(last_trades):
+            for i, trade in last_trades.iterrows():
                 try:
-                    entry_time = trade_info['entry_time']
+                    entry_time, exit_time = trade['EntryTime'], trade['ExitTime']
+                    start_idx = data.index.get_loc(entry_time)
+                    end_idx = data.index.get_loc(exit_time)
                     
-                    # Находим индекс входа, чтобы взять срез данных для графика
-                    start_plot_idx = data.index.get_loc(entry_time)
-                    # Находим индекс выхода
-                    end_plot_idx = data.index.get_loc(trade_info['exit_time'])
+                    plot_data = data.iloc[max(0, start_idx - 50) : end_idx + 20]
+                    plot_title = f"M5 Trade at {entry_time.strftime('%Y-%m-%d %H:%M')}"
+                    img_filename = f"m5_trade_{chat_id}_{i}.png"
 
-                    # Берем данные с запасом до и после сделки для контекста
-                    plot_data = data.iloc[max(0, start_plot_idx - 30) : end_plot_idx + 15]
-
-                    plot_title = f"M5 Trade at {entry_time.strftime('%Y-%m-%d %H:%M')}, Result: {trade_info['reason']}"
-                    plot_filename = f"m5_trade_{i}_{chat_id}.png"
-                    
                     await asyncio.to_thread(
                         create_signal_plot, 
-                        plot_data, entry_time, trade_info['entry_price'], trade_info['sl'], trade_info['tp'], plot_title, plot_filename
+                        plot_data, entry_time, trade['EntryPrice'], trade['SlPrice'], trade['TpPrice'], plot_title, img_filename
                     )
-
-                    if os.path.exists(plot_filename):
-                        image_paths_to_delete.append(plot_filename)
-                        f = open(plot_filename, 'rb')
+                    
+                    if os.path.exists(img_filename):
+                        image_paths_to_delete.append(img_filename)
+                        f = open(img_filename, 'rb')
                         opened_files.append(f)
-                        caption = f"Последние {len(last_trades)} сделок. Сделка {i+1}/{len(last_trades)}" if i == 0 else None
-                        media_group.append(InputMediaPhoto(media=f, caption=caption, parse_mode='Markdown'))
+                        caption = f"Последние {len(last_trades)} сделок из {len(trades)}" if i == last_trades.index[0] else None
+                        media_group.append(InputMediaPhoto(media=f, caption=caption))
 
                 except Exception as e:
-                    logging.error(f"Ошибка при создании изображения для сделки {i}: {e}", exc_info=True)
-                    await bot.send_message(chat_id, f"Не удалось создать изображение для сделки {entry_time.strftime('%Y-%m-%d %H:%M')}.")
-            
+                    logging.error(f"Ошибка при создании изображения для M5 сделки: {e}", exc_info=True)
+
             if media_group:
                 await bot.send_media_group(chat_id, media=media_group)
             
             for f in opened_files:
                 f.close()
-            
             for path in image_paths_to_delete:
                 if os.path.exists(path):
                     os.remove(path)
+        else:
+            await bot.send_message(chat_id, "Не найдено ни одной сделки для отображения.")
 
-        # --- 3. Общий PDF-отчет ---
-        if not data.empty:
-            await bot.send_message(chat_id, "📄 Генерирую итоговый PDF-отчет со всеми сигналами и сделками...")
-            pdf_plot_filename = f"m5_backtest_report_{chat_id}.pdf"
-            
-            await asyncio.to_thread(plot_m5_signals, data, signals, trades, pdf_plot_filename)
-            
-            if os.path.exists(pdf_plot_filename):
-                with open(pdf_plot_filename, 'rb') as doc:
-                    await bot.send_document(chat_id, document=doc, caption="Итоговый PDF-отчет по бэктесту M5.")
-                os.remove(pdf_plot_filename)
-            else:
-                 await bot.send_message(chat_id, "Не удалось создать итоговый PDF-отчет.")
+        if plot_filename and os.path.exists(plot_filename):
+            await update.message.reply_document(
+                document=open(plot_filename, 'rb'),
+                caption=f"📈 *Итоговый PDF-отчет по бэктесту M5*\n\n{format_stats_for_telegram(stats)}",
+                parse_mode='Markdown'
+            )
+            os.remove(plot_filename)
+        else:
+            await update.message.reply_text(f"Не удалось сгенерировать PDF-отчет. Статистика:\n\n{format_stats_for_telegram(stats)}", parse_mode='Markdown')
 
     except Exception as e:
-        logging.error(f"Ошибка в /backtest_m5: {e}", exc_info=True)
-        await bot.send_message(chat_id, f"❌ Критическая ошибка при выполнении M5 бэктеста: {e}")
+        logging.error(f"Критическая ошибка в /backtest_m5: {e}", exc_info=True)
+        await update.message.reply_text(f"Произошла критическая ошибка при выполнении бэктеста M5: {e}")
 
 # --- 5. Веб-сервер и Роуты ---
 
