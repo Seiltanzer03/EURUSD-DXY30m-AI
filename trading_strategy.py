@@ -107,9 +107,9 @@ def load_data_from_yfinance(ticker, period="7d", interval="30m"):
         print(f"Критическая ошибка при загрузке {ticker}: {e}")
         raise
 
-def plot_backtest_results_to_image(bt, stats, filename):
+def plot_backtest_results_to_pdf(stats, data, filename):
     """
-    Создает и сохраняет график результатов бэктеста в виде изображения PNG.
+    Создает и сохраняет график результатов бэктеста в виде PDF-файла.
     """
     try:
         plt.style.use('dark_background')
@@ -122,7 +122,6 @@ def plot_backtest_results_to_image(bt, stats, filename):
         fig.suptitle('Результаты бэктеста', fontsize=16)
 
         # 1. График цены и сделок
-        data = bt.data
         trades = stats['_trades']
         
         axs[0].plot(data.index, data.Close, label='Цена Close', color='lightgray', alpha=0.8, linewidth=1)
@@ -156,7 +155,7 @@ def plot_backtest_results_to_image(bt, stats, filename):
             ax.tick_params(axis='x', rotation=30)
 
         plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-        plt.savefig(filename, bbox_inches='tight', dpi=150)
+        plt.savefig(filename, bbox_inches='tight')
         plt.close(fig)
         print(f"График бэктеста успешно сохранен в {filename}")
         return filename
@@ -198,9 +197,9 @@ def run_backtest(threshold=0.67):
     bt = Backtest(data, SMCStrategy, cash=10000, commission=.0002, margin=0.05)
     stats = bt.run()
     
-    # 5. Сохранение результатов в виде изображения
-    plot_filename = f"backtest_report_{threshold}_{int(time.time())}.png"
-    plot_backtest_results_to_image(bt, stats, plot_filename)
+    # 5. Сохранение результатов в виде PDF
+    plot_filename = f"backtest_report_{threshold}_{int(time.time())}.pdf"
+    plot_backtest_results_to_pdf(stats, data, plot_filename)
     
     print("--- Бэктест завершен ---")
     return stats, plot_filename
@@ -257,9 +256,9 @@ def run_backtest_local(eurusd_csv='eurusd_data_3y.csv', dxy_csv='dxy_data_3y.csv
     bt = Backtest(data, SMCStrategy, cash=10000, commission=.0002, margin=0.05)
     stats = bt.run()
     
-    # 5. Сохранение результатов в виде изображения
-    plot_filename = f"backtest_local_report_{threshold}_{int(time.time())}.png"
-    plot_backtest_results_to_image(bt, stats, plot_filename)
+    # 5. Сохранение результатов в виде PDF
+    plot_filename = f"backtest_local_report_{threshold}_{int(time.time())}.pdf"
+    plot_backtest_results_to_pdf(stats, data, plot_filename)
     print("--- Локальный бэктест завершен ---")
     return stats, plot_filename
 
@@ -344,9 +343,9 @@ def run_backtest_local_no_ml(eurusd_csv='eurusd_data_2y.csv', dxy_csv='dxy_data_
     bt = Backtest(data, SMCStrategyNoML, cash=10000, commission=.0002, margin=0.05)
     stats = bt.run()
     
-    # 5. Сохранение результатов в виде изображения
-    plot_filename = f"backtest_no_ml_report_{int(time.time())}.png"
-    plot_backtest_results_to_image(bt, stats, plot_filename)
+    # 5. Сохранение результатов в виде PDF
+    plot_filename = f"backtest_no_ml_report_{int(time.time())}.pdf"
+    plot_backtest_results_to_pdf(stats, data, plot_filename)
 
     print("--- Локальный бэктест БЕЗ ML-фильтра завершен ---")
     return stats, plot_filename
