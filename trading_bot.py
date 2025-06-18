@@ -38,8 +38,8 @@ def get_background_loop():
             
             def start_loop(loop):
                 asyncio.set_event_loop(loop)
-                # Инициализируем приложение PTB внутри нового цикла
                 logging.info("Initializing PTB application in background thread...")
+                # Инициализируем приложение. Это также инициализирует application.bot
                 loop.run_until_complete(application.initialize())
                 logging.info("PTB application initialized.")
                 loop.run_forever()
@@ -56,7 +56,10 @@ app = Flask(__name__)
 
 # Загрузка секретов из переменных окружения
 TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
-bot = telegram.Bot(token=TELEGRAM_BOT_TOKEN)
+
+# Создаем приложение и используем ЕГО экземпляр бота. Это гарантирует, что у нас только один объект бота.
+application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+bot = application.bot
 
 # Настройки стратегии
 SUBSCRIBERS_FILE = 'subscribers.json'
@@ -291,16 +294,14 @@ async def check_and_send_signals_to_chat(chat_id):
 
 # --- 5. Веб-сервер и Роуты ---
 
-# Создаем экземпляр приложения PTB глобально
-application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-
 @app.route('/webhook', methods=['POST'])
 def webhook():
     """Обрабатывает вебхуки от Telegram, используя PTB Application."""
     try:
         update_data = request.get_json(force=True)
         logging.info(f"Webhook received: {update_data}")
-        update = telegram.Update.de_json(update_data, bot)
+        # Используем application.bot, чтобы передать в update правильный, инициализированный экземпляр бота
+        update = telegram.Update.de_json(update_data, application.bot)
         
         loop = get_background_loop()
         asyncio.run_coroutine_threadsafe(application.process_update(update), loop)
