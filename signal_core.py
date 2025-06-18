@@ -26,27 +26,22 @@ def check_data_gaps(csv_file, freq_minutes=30):
         print('Пропусков не найдено.')
 
 # Настраиваем стиль графиков для лучшей визуализации
-plt.rcParams['figure.figsize'] = (12, 8)
-plt.rcParams['figure.dpi'] = 150
-plt.rcParams['savefig.dpi'] = 150
-
-# Создаем кастомный стиль для свечей
-# mc = mpf.make_marketcolors(
-#     up='green',
-#     down='red',
-#     edge='inherit',
-#     wick={'up':'green', 'down':'red'},
-#     volume='inherit'
-# )
-# s = mpf.make_mpf_style(
-#     base_mpf_style='charles',
-#     marketcolors=mc,
-#     gridstyle=':',
-#     gridcolor='gray',
-#     gridaxis='both',
-#     y_on_right=False,
-#     facecolor='white'
-# )
+# Создаем кастомный стиль для свечей в стиле dark mode
+mc = mpf.make_marketcolors(
+    up='#26a69a',  # Зеленый
+    down='#ef5350', # Красный
+    edge='inherit',
+    wick={'up':'#26a69a', 'down':'#ef5350'},
+    volume='inherit'
+)
+s = mpf.make_mpf_style(
+    base_mpf_style='nightclouds', # Темная тема
+    marketcolors=mc,
+    gridstyle=':',
+    gridcolor='gray',
+    gridaxis='both',
+    y_on_right=False
+)
 
 MODEL_FILE = 'ml_model_final_fix.joblib'
 PREDICTION_THRESHOLD = 0.1
@@ -130,46 +125,45 @@ def load_data(period="2d", interval="5m"):
     
     return data
 
-def create_signal_plot(candles_df, entry_time, entry_price, sl, tp, title, filename):
-    """Создает и сохраняет свечной график сигнала с помощью mplfinance в PNG, отмечая точку входа."""
+def create_signal_plot(candles_df, entry, sl, tp, title, filename):
+    """Создает и сохраняет свечной график сигнала с помощью mplfinance в PNG."""
     try:
-        required_columns = ['Open', 'High', 'Low', 'Close']
-        if not all(col in candles_df.columns for col in required_columns):
-            raise ValueError("Отсутствуют необходимые столбцы OHLC в данных для графика.")
+        # Убедимся, что данные - это котировки с нужными колонками
+        if not all(col in candles_df.columns for col in ['Open', 'High', 'Low', 'Close']):
+            print("Ошибка: DataFrame для графика должен содержать колонки Open, High, Low, Close.")
+            return None
 
-        # Создаем данные для дополнительного графика (маркер входа)
-        entry_marker = [np.nan] * len(candles_df)
-        if entry_time in candles_df.index:
-            entry_idx = candles_df.index.get_loc(entry_time)
-            entry_marker[entry_idx] = entry_price * 0.998 # Располагаем маркер чуть ниже цены для наглядности
+        # Создаем линии для уровней входа, SL и TP
+        hlines = dict(hlines=[(entry, 'blue', '--'), (sl, 'red', '--'), (tp, 'lime', '--')],
+                      linewidths=1, alpha=0.7)
+
+        # Создаем маркер для точки входа. Он будет на последней свече.
+        entry_point = [np.nan] * len(candles_df)
+        entry_point[-1] = entry * 0.998 # Располагаем маркер чуть ниже цены входа для наглядности
         
-        addplot = [
-            mpf.make_addplot(entry_marker, type='scatter', color='#00BFFF', marker='^', markersize=150, label='Entry Point')
+        apds = [
+            mpf.make_addplot(entry_point, type='scatter', marker='v', color='cyan', s=100)
         ]
 
-        # Настраиваем стиль
-        mc = mpf.make_marketcolors(
-            up='#26a69a', down='#ef5350',
-            edge='inherit', wick={'up':'#26a69a', 'down':'#ef5350'}, volume='inherit'
-        )
-        s = mpf.make_mpf_style(
-            base_mpf_style='nightclouds', marketcolors=mc,
-            gridstyle=':', gridcolor='gray'
-        )
-        
-        # Строим и сохраняем график
+        # Создаем и сохраняем график
         mpf.plot(
-            candles_df, type='candle', style=s,
-            title=title, ylabel='Price',
-            hlines=dict(hlines=[entry_price, sl, tp], colors=['b', 'r', 'g'], linestyle='--'),
-            addplot=addplot,
-            figsize=(15, 8),
+            candles_df,
+            type='candle',
+            style=s, # Применяем наш темный стиль
+            title=title,
+            ylabel='Price',
+            addplot=apds,
+            hlines=hlines,
+            figsize=(12, 7),
             savefig=dict(fname=filename, dpi=150, bbox_inches='tight')
         )
+        
         print(f"Свечной график успешно сохранен в {filename}")
         return filename
     except Exception as e:
         print(f"Ошибка при создании графика mplfinance: {e}")
+        import traceback
+        traceback.print_exc()
         return None
 
 def generate_signal_and_plot():
@@ -214,10 +208,9 @@ def generate_signal_and_plot():
         
         # Построение графика
         candles_for_plot = data.tail(60).copy()
-        plot_title = f'SELL EURUSD ({timeframe}) Setup'
-        plot_filename = 'signal_5m.png'
-        # Передаем время входа для маркера
-        plot_path = create_signal_plot(candles_for_plot, entry_bar.name, entry, sl, tp, plot_title, plot_filename)
+        plot_title = f'SELL EURUSD ({timeframe}) Setup at {entry_bar.name.strftime("%Y-%m-%d %H:%M")}'
+        plot_filename = f'signal_{timeframe}.png'
+        plot_path = create_signal_plot(candles_for_plot, entry, sl, tp, plot_title, plot_filename)
 
     return signal, entry, sl, tp, last_bar, plot_path, timeframe
 
@@ -378,8 +371,8 @@ def generate_signal_and_plot_30m():
             # Сохраняем график
             plot_path = 'signal_30m.png'
             plot_title = f"SELL EURUSD ({timeframe}) | Prob: {win_prob:.0%}"
-            candles_for_plot = data.tail(60).copy()
-            plot_path = create_signal_plot(candles_for_plot, last.name, entry, sl, tp, plot_title, plot_path)
+            candles_for_plot = data.tail(100).copy()
+            plot_path = create_signal_plot(candles_for_plot, entry, sl, tp, plot_title, plot_path)
             
         except Exception as e:
             print(f"[30M] Ошибка при построении графика: {e}")
