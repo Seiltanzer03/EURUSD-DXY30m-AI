@@ -7,7 +7,7 @@ import yfinance as yf
 import telegram
 from flask import Flask, request
 import asyncio
-from trading_strategy import run_backtest, run_backtest_local, plot_backtest_results_to_pdf
+from trading_strategy import run_backtest, run_backtest_local
 import threading
 import logging
 import re
