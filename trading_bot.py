@@ -168,26 +168,91 @@ async def check(update: Update, context: ContextTypes.DEFAULT_TYPE):
     task.add_done_callback(background_tasks.discard)
 
 async def backtest(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Запускает бэктест по команде с фиксированным порогом 0.55."""
-    threshold = 0.55
-    await update.message.reply_text('Запускаю бэктест с котировками Yahoo...')
+    """Запускает бэктест M30, отправляет PDF-отчет и PNG-изображения для ВСЕХ сделок."""
+    chat_id = update.message.chat_id
+    threshold = 0.55  # Используем фиксированный порог для этой команды
+    await bot.send_message(chat_id, f'▶️ Запускаю бэктест M30 с котировками Yahoo (порог {threshold}). Генерирую отчет и изображения сделок...')
     
     try:
         # Запускаем в отдельном потоке, чтобы не блокировать бота
-        stats, plot_filename = await asyncio.to_thread(run_backtest, threshold)
+        stats, data, plot_filename = await asyncio.to_thread(run_backtest, threshold)
         
+        # Если stats - это строка, значит, произошла ошибка на этапе бэктеста
+        if isinstance(stats, str):
+            await bot.send_message(chat_id, f"❌ Ошибка при выполнении бэктеста: {stats}")
+            return
+
+        # --- 1. Отправка изображений сделок ---
+        trades = stats['_trades']
+        if not trades.empty:
+            await bot.send_message(chat_id, f"🖼️ Найдено {len(trades)} сделок. Генерирую и отправляю изображения (пачками по 10 шт.)...")
+
+            image_paths_to_delete = []
+            
+            # Разделяем на чанки по 10
+            for i in range(0, len(trades), 10):
+                chunk = trades.iloc[i:i+10]
+                media_group = []
+                opened_files = []
+                
+                for j, trade in chunk.iterrows():
+                    try:
+                        entry_time = trade['EntryTime']
+                        exit_time = trade['ExitTime']
+                        
+                        start_idx = data.index.get_loc(entry_time)
+                        end_idx = data.index.get_loc(exit_time)
+                        
+                        # Берем данные с запасом для контекста
+                        plot_data = data.iloc[max(0, start_idx - 50) : end_idx + 20]
+                        
+                        plot_title = f"M30 Trade at {entry_time.strftime('%Y-%m-%d %H:%M')}"
+                        img_filename = f"m30_trade_{chat_id}_{i+j}.png"
+
+                        await asyncio.to_thread(
+                            create_signal_plot, 
+                            plot_data, entry_time, trade['EntryPrice'], trade['SlPrice'], trade['TpPrice'], plot_title, img_filename
+                        )
+                        
+                        if os.path.exists(img_filename):
+                            image_paths_to_delete.append(img_filename)
+                            f = open(img_filename, 'rb')
+                            opened_files.append(f)
+                            caption = f"Сделки {i+1}-{min(i+10, len(trades))} из {len(trades)}" if j == chunk.index[0] else None
+                            media_group.append(InputMediaPhoto(media=f, caption=caption))
+
+                    except Exception as e:
+                        logging.error(f"Ошибка при создании изображения для M30 сделки: {e}", exc_info=True)
+
+                if media_group:
+                    await bot.send_media_group(chat_id, media=media_group)
+                
+                for f in opened_files:
+                    f.close()
+
+            # Очистка временных файлов
+            for path in image_paths_to_delete:
+                if os.path.exists(path):
+                    os.remove(path)
+        else:
+            await bot.send_message(chat_id, "Не найдено ни одной сделки для отображения.")
+
+
+        # --- 2. Отправка PDF-отчета ---
         if plot_filename and os.path.exists(plot_filename):
             await update.message.reply_document(
                 document=open(plot_filename, 'rb'),
-                caption=f"📈 **Результаты бэктеста (Yahoo)**\n\n{format_stats_for_telegram(stats)}",
+                caption=f"📈 *Итоговый PDF-отчет по бэктесту M30 (Yahoo)*\n\n{format_stats_for_telegram(stats)}",
                 parse_mode='Markdown'
             )
             os.remove(plot_filename)
         else:
-            await update.message.reply_text(f"Не удалось сгенерировать отчет. {stats}")
+            # Если plot_filename не пришел, значит была ошибка конвертации, но stats есть
+            await update.message.reply_text(f"Не удалось сгенерировать PDF-отчет. Статистика:\n\n{format_stats_for_telegram(stats)}", parse_mode='Markdown')
+
     except Exception as e:
-        logging.error(f"Ошибка при выполнении бэктеста: {e}")
-        await update.message.reply_text(f"Произошла ошибка при выполнении бэктеста: {e}")
+        logging.error(f"Критическая ошибка в /backtest: {e}", exc_info=True)
+        await update.message.reply_text(f"Произошла критическая ошибка при выполнении бэктеста: {e}")
 
 async def backtest_local(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Запускает локальный бэктест по команде."""
@@ -457,7 +522,7 @@ async def backtest_m5(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     
                     await asyncio.to_thread(
                         create_signal_plot, 
-                        plot_data, trade_info['entry_price'], trade_info['sl'], trade_info['tp'], plot_title, plot_filename
+                        plot_data, entry_time, trade_info['entry_price'], trade_info['sl'], trade_info['tp'], plot_title, plot_filename
                     )
 
                     if os.path.exists(plot_filename):
