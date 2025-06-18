@@ -11,7 +11,7 @@ from trading_strategy import run_backtest, run_backtest_local
 import threading
 import logging
 import re
-from signal_core import generate_signal_and_plot, generate_signal_and_plot_30m
+from signal_core import generate_signal_and_plot, generate_signal_and_plot_30m, load_data
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
@@ -292,6 +292,45 @@ async def check_and_send_signals_to_chat(chat_id):
         logging.error(f"Ошибка при проверке и отправке сигналов: {e}")
         await bot.send_message(chat_id, f"Произошла ошибка: {e}")
 
+async def backtest_m5(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Запускает бэктест пятиминутного SMC сигнала без ML-фильтра."""
+    await update.message.reply_text('Запускаю бэктест пятиминутного сигнала (SMC, без ML)...')
+    try:
+        LOOKBACK = 12
+        START_HOUR = 13
+        END_HOUR = 17
+        SL_RATIO = 0.002
+        TP_RATIO = 0.005
+        period = '30d'
+        interval = '5m'
+        data = await asyncio.to_thread(load_data, period, interval)
+        signals = []
+        for i in range(LOOKBACK + 2, len(data)):
+            last_bar = data.iloc[i-2]
+            entry_bar = data.iloc[i-1]
+            previous_bars = data.iloc[i-(LOOKBACK+2):i-2]
+            is_trading_time = START_HOUR <= last_bar.name.hour <= END_HOUR
+            dxy_raid = last_bar['DXY_Low'] < previous_bars['DXY_Low'].min()
+            eurusd_judas_swing = last_bar['High'] > previous_bars['High'].max()
+            signal = is_trading_time and dxy_raid and eurusd_judas_swing
+            if signal:
+                signals.append({
+                    'time': entry_bar.name,
+                    'entry': entry_bar['Open'],
+                    'sl': entry_bar['Open'] * (1 + SL_RATIO),
+                    'tp': entry_bar['Open'] * (1 - TP_RATIO)
+                })
+        msg = f'Всего сигналов за 30 дней: {len(signals)}'
+        if signals:
+            msg += '\nПервые 5 сигналов:'
+            for s in signals[:5]:
+                msg += f"\nВремя: {s['time']}, Entry: {s['entry']:.5f}, SL: {s['sl']:.5f}, TP: {s['tp']:.5f}"
+        else:
+            msg += '\nСигналы не найдены.'
+        await update.message.reply_text(msg)
+    except Exception as e:
+        await update.message.reply_text(f'Ошибка при бэктесте M5: {e}')
+
 # --- 5. Веб-сервер и Роуты ---
 
 @app.route('/webhook', methods=['POST'])
@@ -365,3 +404,4 @@ application.add_handler(CommandHandler("check", check))
 application.add_handler(CommandHandler("backtest", backtest))
 application.add_handler(CommandHandler("backtest_local", backtest_local))
 application.add_handler(CommandHandler("fullbacktest", fullbacktest))
+application.add_handler(CommandHandler("backtest_m5", backtest_m5))
