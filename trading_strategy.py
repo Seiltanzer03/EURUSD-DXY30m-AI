@@ -9,6 +9,7 @@ import time
 import requests
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
+import weasyprint
 
 def flatten_multiindex_columns(df):
     """
@@ -107,70 +108,14 @@ def load_data_from_yfinance(ticker, period="7d", interval="30m"):
         print(f"Критическая ошибка при загрузке {ticker}: {e}")
         raise
 
-def plot_backtest_results_to_pdf(stats, data, filename):
-    """
-    Создает и сохраняет график результатов бэктеста в виде PDF-файла.
-    """
-    try:
-        plt.style.use('dark_background')
-        fig, axs = plt.subplots(
-            3, 1,
-            figsize=(15, 12),
-            sharex=True,
-            gridspec_kw={'height_ratios': [3, 1, 1]}
-        )
-        fig.suptitle('Результаты бэктеста', fontsize=16)
-
-        # 1. График цены и сделок
-        trades = stats['_trades']
-        
-        axs[0].plot(data.index, data.Close, label='Цена Close', color='lightgray', alpha=0.8, linewidth=1)
-        
-        if not trades.empty:
-            sell_entries = trades[trades['Size'] < 0]
-            axs[0].plot(sell_entries['EntryTime'], sell_entries['EntryPrice'], 'v', color='#ff4d4d', markersize=7, label='Вход в шорт', linestyle='None')
-            axs[0].plot(sell_entries['ExitTime'], sell_entries['ExitPrice'], '^', color='#00e676', markersize=7, label='Выход', linestyle='None')
-
-        axs[0].set_ylabel('Цена EURUSD')
-        axs[0].legend()
-        axs[0].grid(True, linestyle=':', alpha=0.3)
-        
-        # 2. График капитала (Equity)
-        equity_curve = stats['_equity_curve']
-        axs[1].plot(equity_curve.index, equity_curve['Equity'], label='Капитал', color='cyan')
-        axs[1].set_ylabel('Капитал ($)')
-        axs[1].legend()
-        axs[1].grid(True, linestyle=':', alpha=0.3)
-
-        # 3. График просадки (Drawdown)
-        axs[2].fill_between(equity_curve.index, equity_curve['DrawdownPct'] * 100, 0, color='red', alpha=0.3, label='Просадка')
-        axs[2].plot(equity_curve.index, equity_curve['DrawdownPct'] * 100, color='red', alpha=0.7, linewidth=1)
-        axs[2].set_ylabel('Просадка (%)')
-        axs[2].legend()
-        axs[2].grid(True, linestyle=':', alpha=0.3)
-
-        # Форматирование оси X
-        for ax in axs:
-            ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d %H:%M'))
-            ax.tick_params(axis='x', rotation=30)
-
-        plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-        plt.savefig(filename, bbox_inches='tight')
-        plt.close(fig)
-        print(f"График бэктеста успешно сохранен в {filename}")
-        return filename
-    except Exception as e:
-        print(f"Ошибка при создании графика бэктеста: {e}")
-        return None
-
-def run_backtest(threshold=0.67):
-    """Основная функция для запуска бэктеста."""
-    print("--- Запуск бэктеста ---")
+def run_backtest(threshold=0.55):
+    """Основная функция для запуска бэктеста на данных Yahoo."""
+    print("--- Запуск бэктеста на данных Yahoo ---")
     
     # 1. Загрузка данных
     try:
-        eurusd_data = load_data_from_yfinance('EURUSD=X', period='59d')
-        dxy_data = load_data_from_yfinance('DX-Y.NYB', period='59d')
+        eurusd_data = load_data_from_yfinance('EURUSD=X')
+        dxy_data = load_data_from_yfinance('DX-Y.NYB')
     except Exception as e:
         return f"Ошибка загрузки данных: {e}", None
 
@@ -185,170 +130,115 @@ def run_backtest(threshold=0.67):
     data.dropna(inplace=True)
 
     # 3. Загрузка модели
-    model_file = 'ml_model_final_fix.joblib'
-    if not os.path.exists(model_file):
-        return "Файл модели не найден!", None
-    model = joblib.load(model_file)
+    if not os.path.exists(MODEL_FILE):
+        return f"Файл модели не найден: {MODEL_FILE}", None
+    model = joblib.load(MODEL_FILE)
 
     # 4. Запуск бэктеста
     SMCStrategy.ml_model = model
     SMCStrategy.prediction_threshold = threshold
     
-    bt = Backtest(data, SMCStrategy, cash=10000, commission=.0002, margin=0.05)
+    bt = Backtest(data, SMCStrategy, cash=10000, commission=.0002)
     stats = bt.run()
     
     # 5. Сохранение результатов в виде PDF
-    plot_filename = f"backtest_report_{threshold}_{int(time.time())}.pdf"
-    plot_backtest_results_to_pdf(stats, data, plot_filename)
-    
-    print("--- Бэктест завершен ---")
-    return stats, plot_filename
+    html_filename = f"backtest_report_{threshold}_{int(time.time())}.html"
+    bt.plot(filename=html_filename, open_browser=False)
 
-def run_backtest_local(eurusd_csv='eurusd_data_3y.csv', dxy_csv='dxy_data_3y.csv', threshold=0.67):
-    """Запуск бэктеста на локальных csv-файлах котировок."""
-    print("--- Запуск ЛОКАЛЬНОГО бэктеста ---")
-    # 1. Загрузка данных из CSV
+    pdf_filename = html_filename.replace('.html', '.pdf')
     try:
-        eurusd_data = pd.read_csv(eurusd_csv, parse_dates=['Gmt time'])
-        eurusd_data.rename(columns={
-            'Gmt time': 'Datetime',
-            'Open': 'Open',
-            'High': 'High',
-            'Low': 'Low',
-            'Close': 'Close',
-            'Volume': 'Volume',
-        }, inplace=True)
-        eurusd_data.set_index('Datetime', inplace=True)
-        eurusd_data.index = pd.to_datetime(eurusd_data.index, format='%d.%m.%Y %H:%M:%S.%f')
-        eurusd_data.index = eurusd_data.index.tz_localize('UTC')
-
-        dxy_data = pd.read_csv(dxy_csv, parse_dates=['Gmt time'])
-        dxy_data.rename(columns={
-            'Gmt time': 'Datetime',
-            'Low': 'DXY_Low',
-        }, inplace=True)
-        dxy_data.set_index('Datetime', inplace=True)
-        dxy_data.index = pd.to_datetime(dxy_data.index, format='%d.%m.%Y %H:%M:%S.%f')
-        dxy_data.index = dxy_data.index.tz_localize('UTC')
+        print(f"Конвертация {html_filename} в {pdf_filename}...")
+        weasyprint.HTML(html_filename).write_pdf(pdf_filename)
+        print("Конвертация завершена.")
+        os.remove(html_filename) # Удаляем временный HTML
+        return stats, pdf_filename
     except Exception as e:
-        return f"Ошибка загрузки локальных данных: {e}", None
+        print(f"Ошибка при конвертации HTML в PDF: {e}")
+        # Если не вышло, возвращаем хотя бы HTML
+        return stats, html_filename
 
-    # 2. Подготовка данных (индикаторы)
-    eurusd_data.ta.rsi(length=14, append=True)
-    eurusd_data.ta.macd(fast=12, slow=26, signal=9, append=True)
-    eurusd_data.ta.atr(length=14, append=True)
-    eurusd_data.rename(columns={'RSI_14':'RSI', 'MACD_12_26_9':'MACD', 'MACDh_12_26_9':'MACD_hist', 'MACDs_12_26_9':'MACD_signal', 'ATRr_14':'ATR'}, inplace=True)
+def run_backtest_local(eurusd_file, dxy_file, threshold):
+    """Запускает бэктест на локальных CSV-файлах."""
+    print("--- Запуск ЛОКАЛЬНОГО бэктеста ---")
+    
+    try:
+        # 1. Загрузка и подготовка данных
+        data = generate_features_for_backtest(eurusd_file, dxy_file)
+    except Exception as e:
+        return f"Ошибка подготовки данных: {e}", None
 
-    # 3. Объединение с DXY
-    dxy_data_renamed = dxy_data[['DXY_Low']]
-    data = pd.concat([eurusd_data, dxy_data_renamed], axis=1)
-    data.dropna(inplace=True)
+    # 2. Загрузка модели
+    if not os.path.exists(MODEL_FILE):
+        return f"Файл модели не найден: {MODEL_FILE}", None
+    model = joblib.load(MODEL_FILE)
 
-    # 4. Загрузка модели
-    model_file = 'ml_model_final_fix.joblib'
-    if not os.path.exists(model_file):
-        return "Файл модели не найден!", None
-    model = joblib.load(model_file)
-
-    # 5. Запуск бэктеста
+    # 3. Запуск бэктеста
     SMCStrategy.ml_model = model
     SMCStrategy.prediction_threshold = threshold
-    bt = Backtest(data, SMCStrategy, cash=10000, commission=.0002, margin=0.05)
-    stats = bt.run()
     
-    # 5. Сохранение результатов в виде PDF
-    plot_filename = f"backtest_local_report_{threshold}_{int(time.time())}.pdf"
-    plot_backtest_results_to_pdf(stats, data, plot_filename)
-    print("--- Локальный бэктест завершен ---")
-    return stats, plot_filename
+    bt = Backtest(data, SMCStrategy, cash=10000, commission=.0002)
+    try:
+        stats = bt.run()
+    except Exception as e:
+        return f"Ошибка во время выполнения бэктеста: {e}", None
+        
+    # 4. Сохранение результатов в виде PDF
+    html_filename = f"backtest_local_report_{threshold}_{int(time.time())}.html"
+    bt.plot(filename=html_filename, open_browser=False)
 
-def run_backtest_local_no_ml(eurusd_csv='eurusd_data_2y.csv', dxy_csv='dxy_data_2y.csv'):
-    """Бэктест на локальных csv-файлах котировок БЕЗ ML-фильтра (только технические условия)."""
-    print("--- Запуск ЛОКАЛЬНОГО бэктеста БЕЗ ML-фильтра ---")
-    # 1. Загрузка данных из CSV
+    pdf_filename = html_filename.replace('.html', '.pdf')
+    try:
+        print(f"Конвертация {html_filename} в {pdf_filename}...")
+        weasyprint.HTML(html_filename).write_pdf(pdf_filename)
+        print("Конвертация завершена.")
+        os.remove(html_filename)
+        return stats, pdf_filename
+    except Exception as e:
+        print(f"Ошибка при конвертации HTML в PDF: {e}")
+        return stats, html_filename
+
+def generate_features_for_backtest(eurusd_csv, dxy_csv):
+    """Общая функция для загрузки и подготовки данных для бэктестов."""
     try:
         eurusd_data = pd.read_csv(eurusd_csv, parse_dates=['Gmt time'])
         eurusd_data.rename(columns={
-            'Gmt time': 'Datetime',
-            'Open': 'Open',
-            'High': 'High',
-            'Low': 'Low',
-            'Close': 'Close',
-            'Volume': 'Volume',
+            'Gmt time': 'Datetime', 'Open': 'Open', 'High': 'High',
+            'Low': 'Low', 'Close': 'Close', 'Volume': 'Volume',
         }, inplace=True)
         eurusd_data.set_index('Datetime', inplace=True)
-        eurusd_data.index = pd.to_datetime(eurusd_data.index, format='%d.%m.%Y %H:%M:%S.%f')
+        # Указываем правильный формат, если он отличается
+        try:
+            eurusd_data.index = pd.to_datetime(eurusd_data.index, format='%d.%m.%Y %H:%M:%S.%f')
+        except (ValueError, TypeError):
+             eurusd_data.index = pd.to_datetime(eurusd_data.index)
         eurusd_data.index = eurusd_data.index.tz_localize('UTC')
 
         dxy_data = pd.read_csv(dxy_csv, parse_dates=['Gmt time'])
-        dxy_data.rename(columns={
-            'Gmt time': 'Datetime',
-            'Low': 'DXY_Low',
-        }, inplace=True)
+        dxy_data.rename(columns={'Gmt time': 'Datetime', 'Low': 'DXY_Low'}, inplace=True)
         dxy_data.set_index('Datetime', inplace=True)
-        dxy_data.index = pd.to_datetime(dxy_data.index, format='%d.%m.%Y %H:%M:%S.%f')
+        try:
+            dxy_data.index = pd.to_datetime(dxy_data.index, format='%d.%m.%Y %H:%M:%S.%f')
+        except (ValueError, TypeError):
+            dxy_data.index = pd.to_datetime(dxy_data.index)
+
         dxy_data.index = dxy_data.index.tz_localize('UTC')
     except Exception as e:
-        return f"Ошибка загрузки локальных данных: {e}", None
+        raise ValueError(f"Ошибка при чтении или обработке CSV: {e}")
 
-    # 2. Подготовка данных (индикаторы)
+    # Расчет индикаторов
     eurusd_data.ta.rsi(length=14, append=True)
     eurusd_data.ta.macd(fast=12, slow=26, signal=9, append=True)
     eurusd_data.ta.atr(length=14, append=True)
-    eurusd_data.rename(columns={'RSI_14':'RSI', 'MACD_12_26_9':'MACD', 'MACDh_12_26_9':'MACD_hist', 'MACDs_12_26_9':'MACD_signal', 'ATRr_14':'ATR'}, inplace=True)
+    eurusd_data.rename(columns={
+        'RSI_14':'RSI', 'MACD_12_26_9':'MACD', 'MACDh_12_26_9':'MACD_hist',
+        'MACDs_12_26_9':'MACD_signal', 'ATRr_14':'ATR'
+    }, inplace=True)
 
-    # 3. Объединение с DXY
-    dxy_data_renamed = dxy_data[['DXY_Low']]
-    data = pd.concat([eurusd_data, dxy_data_renamed], axis=1)
+    # Объединение
+    data = pd.concat([eurusd_data, dxy_data[['DXY_Low']]], axis=1)
     data.dropna(inplace=True)
-
-    # 4. Переопределяем SMCStrategy так, чтобы игнорировать ML-фильтр
-    class SMCStrategyNoML(SMCStrategy):
-        def next(self):
-            current_hour = self.data.index[-1].hour
-            is_trading_time = self.start_hour <= current_hour <= self.end_hour
-            if not is_trading_time or self.position:
-                return
-            current_index = len(self.data.Close) - 1
-            if current_index < self.lookback_period:
-                return
-            start_index = current_index - self.lookback_period
-            recent_dxy_low = self.data.DXY_Low[start_index:current_index].min()
-            dxy_raid = self.data.DXY_Low[-1] < recent_dxy_low
-            recent_eurusd_high = self.data.High[start_index:current_index].max()
-            eurusd_judas_swing = self.data.High[-1] > recent_eurusd_high
-            if dxy_raid and eurusd_judas_swing:
-                self.signal_to_trade = -1
-            else:
-                self.signal_to_trade = 0
-            if self.signal_to_trade == -1 and not self.position:
-                entry_price = self.data.Open[-1]
-                sl_price = entry_price * (1 + self.sl_ratio)
-                tp_price = entry_price * (1 - self.tp_ratio)
-                if not (np.isfinite(entry_price) and np.isfinite(sl_price) and np.isfinite(tp_price) and (tp_price < entry_price < sl_price)):
-                    self.signal_to_trade = 0
-                    return
-                stop_distance_per_unit = sl_price - entry_price
-                if stop_distance_per_unit > 0:
-                    initial_equity = 10000
-                    fixed_risk_amount = initial_equity * self.risk_percent
-                    units_to_trade = fixed_risk_amount / stop_distance_per_unit
-                    if units_to_trade > 0:
-                        try:
-                            self.sell(size=int(units_to_trade), sl=sl_price, tp=tp_price)
-                        except Exception:
-                            pass
-                self.signal_to_trade = 0
-
-    bt = Backtest(data, SMCStrategyNoML, cash=10000, commission=.0002, margin=0.05)
-    stats = bt.run()
     
-    # 5. Сохранение результатов в виде PDF
-    plot_filename = f"backtest_no_ml_report_{int(time.time())}.pdf"
-    plot_backtest_results_to_pdf(stats, data, plot_filename)
-
-    print("--- Локальный бэктест БЕЗ ML-фильтра завершен ---")
-    return stats, plot_filename
+    return data
 
 # Этот блок больше не нужен, так как запуск будет из бота
 # if __name__ == "__main__":
