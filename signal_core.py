@@ -6,8 +6,24 @@ import joblib
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-import mplfinance as mpf
+# import mplfinance as mpf
 import warnings
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import classification_report
+
+def check_data_gaps(csv_file, freq_minutes=30):
+    """Проверяет пропуски в датах (интервалы между свечами больше freq_minutes)."""
+    df = pd.read_csv(csv_file, parse_dates=['Gmt time'])
+    df['Datetime'] = pd.to_datetime(df['Gmt time'], format='%d.%m.%Y %H:%M:%S.%f')
+    df = df.sort_values('Datetime')
+    df['diff'] = df['Datetime'].diff().dt.total_seconds() / 60
+    gaps = df[df['diff'] > freq_minutes]
+    print(f'Всего пропусков: {len(gaps)}')
+    if not gaps.empty:
+        print('Первые 10 пропусков:')
+        print(gaps[['Datetime', 'diff']].head(10))
+    else:
+        print('Пропусков не найдено.')
 
 # Настраиваем стиль графиков для лучшей визуализации
 plt.rcParams['figure.figsize'] = (12, 8)
@@ -15,22 +31,22 @@ plt.rcParams['figure.dpi'] = 150
 plt.rcParams['savefig.dpi'] = 150
 
 # Создаем кастомный стиль для свечей
-mc = mpf.make_marketcolors(
-    up='green',
-    down='red',
-    edge='inherit',
-    wick={'up':'green', 'down':'red'},
-    volume='inherit'
-)
-s = mpf.make_mpf_style(
-    base_mpf_style='charles',
-    marketcolors=mc,
-    gridstyle=':',
-    gridcolor='gray',
-    gridaxis='both',
-    y_on_right=False,
-    facecolor='white'
-)
+# mc = mpf.make_marketcolors(
+#     up='green',
+#     down='red',
+#     edge='inherit',
+#     wick={'up':'green', 'down':'red'},
+#     volume='inherit'
+# )
+# s = mpf.make_mpf_style(
+#     base_mpf_style='charles',
+#     marketcolors=mc,
+#     gridstyle=':',
+#     gridcolor='gray',
+#     gridaxis='both',
+#     y_on_right=False,
+#     facecolor='white'
+# )
 
 MODEL_FILE = 'ml_model_final_fix.joblib'
 PREDICTION_THRESHOLD = 0.1
@@ -199,47 +215,47 @@ def generate_signal_and_plot():
             ]
             
             # Настраиваем стиль графика
-            mc = mpf.make_marketcolors(
-                up='green', down='red',
-                edge={'up':'green', 'down':'red'},
-                wick={'up':'green', 'down':'red'},
-                volume='blue'
-            )
+            # mc = mpf.make_marketcolors(
+            #     up='green', down='red',
+            #     edge={'up':'green', 'down':'red'},
+            #     wick={'up':'green', 'down':'red'},
+            #     volume='blue'
+            # )
             
-            s = mpf.make_mpf_style(
-                marketcolors=mc,
-                gridstyle='-',
-                gridcolor='#E0E0E0',
-                gridaxis='both',
-                y_on_right=False,
-                facecolor='white',
-                figcolor='white',
-                edgecolor='black'
-            )
+            # s = mpf.make_mpf_style(
+            #     marketcolors=mc,
+            #     gridstyle='-',
+            #     gridcolor='#E0E0E0',
+            #     gridaxis='both',
+            #     y_on_right=False,
+            #     facecolor='white',
+            #     figcolor='white',
+            #     edgecolor='black'
+            # )
             
             # Создаем график
-            fig, axes = mpf.plot(
-                candles,
-                type='candle',
-                style=s,
-                title=f'SELL EURUSD ({TIMEFRAME})',
-                ylabel='Price',
-                addplot=apds,
-                figsize=(12, 8),
-                returnfig=True
-            )
+            # fig, axes = mpf.plot(
+            #     candles,
+            #     type='candle',
+            #     style=s,
+            #     title=f'SELL EURUSD ({TIMEFRAME})',
+            #     ylabel='Price',
+            #     addplot=apds,
+            #     figsize=(12, 8),
+            #     returnfig=True
+            # )
             
             # Добавляем маркер точки входа
-            ax = axes[0]
-            ax.scatter([len(candles)-1], [entry], color='blue', marker='v', s=120, label='Sell Entry')
+            # ax = axes[0]
+            # ax.scatter([len(candles)-1], [entry], color='blue', marker='v', s=120, label='Sell Entry')
             
             # Добавляем легенду
-            ax.legend(loc='upper left')
+            # ax.legend(loc='upper left')
             
             # Сохраняем график
             plot_path = 'signal.png'
-            fig.savefig(plot_path, dpi=150, bbox_inches='tight')
-            plt.close(fig)
+            # fig.savefig(plot_path, dpi=150, bbox_inches='tight')
+            plt.close()
             print(f"График успешно сохранен в {plot_path}")
             
         except Exception as e:
@@ -367,47 +383,47 @@ def generate_signal_and_plot_30m():
             ]
             
             # Настраиваем стиль графика
-            mc = mpf.make_marketcolors(
-                up='green', down='red',
-                edge={'up':'green', 'down':'red'},
-                wick={'up':'green', 'down':'red'},
-                volume='blue'
-            )
+            # mc = mpf.make_marketcolors(
+            #     up='green', down='red',
+            #     edge={'up':'green', 'down':'red'},
+            #     wick={'up':'green', 'down':'red'},
+            #     volume='blue'
+            # )
             
-            s = mpf.make_mpf_style(
-                marketcolors=mc,
-                gridstyle='-',
-                gridcolor='#E0E0E0',
-                gridaxis='both',
-                y_on_right=False,
-                facecolor='white',
-                figcolor='white',
-                edgecolor='black'
-            )
+            # s = mpf.make_mpf_style(
+            #     marketcolors=mc,
+            #     gridstyle='-',
+            #     gridcolor='#E0E0E0',
+            #     gridaxis='both',
+            #     y_on_right=False,
+            #     facecolor='white',
+            #     figcolor='white',
+            #     edgecolor='black'
+            # )
             
             # Создаем график
-            fig, axes = mpf.plot(
-                candles,
-                type='candle',
-                style=s,
-                title=f'SELL EURUSD ({timeframe})',
-                ylabel='Price',
-                addplot=apds,
-                figsize=(12, 8),
-                returnfig=True
-            )
+            # fig, axes = mpf.plot(
+            #     candles,
+            #     type='candle',
+            #     style=s,
+            #     title=f'SELL EURUSD ({timeframe})',
+            #     ylabel='Price',
+            #     addplot=apds,
+            #     figsize=(12, 8),
+            #     returnfig=True
+            # )
             
             # Добавляем маркер точки входа
-            ax = axes[0]
-            ax.scatter([len(candles)-1], [entry], color='blue', marker='v', s=120, label='Sell Entry')
+            # ax = axes[0]
+            # ax.scatter([len(candles)-1], [entry], color='blue', marker='v', s=120, label='Sell Entry')
             
             # Добавляем легенду
-            ax.legend(loc='upper left')
+            # ax.legend(loc='upper left')
             
             # Сохраняем график
             plot_path = 'signal_30m.png'
-            fig.savefig(plot_path, dpi=150, bbox_inches='tight')
-            plt.close(fig)
+            # fig.savefig(plot_path, dpi=150, bbox_inches='tight')
+            plt.close()
             print(f"[30M] График успешно сохранен в {plot_path}")
             
         except Exception as e:
@@ -422,3 +438,82 @@ def generate_signal_and_plot_30m():
         return False, entry, sl, tp, last, None, timeframe
 
     return signal, entry, sl, tp, last, plot_path, timeframe 
+
+def train_ml_model_from_csv(eurusd_csv, dxy_csv, model_file='ml_model_final_fix.joblib'):
+    """Переобучает ML-модель на новых котировках по SMC-логике и сохраняет в файл."""
+    # 1. Загрузка данных
+    eurusd = pd.read_csv(eurusd_csv, parse_dates=['Gmt time'])
+    eurusd['Datetime'] = pd.to_datetime(eurusd['Gmt time'], format='%d.%m.%Y %H:%M:%S.%f')
+    eurusd.set_index('Datetime', inplace=True)
+    dxy = pd.read_csv(dxy_csv, parse_dates=['Gmt time'])
+    dxy['Datetime'] = pd.to_datetime(dxy['Gmt time'], format='%d.%m.%Y %H:%M:%S.%f')
+    dxy.set_index('Datetime', inplace=True)
+
+    # 2. Индикаторы
+    eurusd.ta.rsi(length=14, append=True)
+    eurusd.ta.macd(fast=12, slow=26, signal=9, append=True)
+    eurusd.ta.atr(length=14, append=True)
+    eurusd.rename(columns={'RSI_14':'RSI', 'MACD_12_26_9':'MACD', 'MACDh_12_26_9':'MACD_hist', 'MACDs_12_26_9':'MACD_signal', 'ATRr_14':'ATR'}, inplace=True)
+    dxy = dxy.rename(columns={'Low': 'DXY_Low'})
+    data = pd.concat([eurusd, dxy['DXY_Low']], axis=1)
+    data.dropna(inplace=True)
+
+    # 3. Формирование обучающей выборки
+    X, y = [], []
+    lookback = 20
+    for i in range(lookback, len(data)-1):
+        dt = data.index[i]
+        if not (13 <= dt.hour <= 17):
+            continue
+        dxy_raid = data['DXY_Low'].iloc[i] < data['DXY_Low'].iloc[i-lookback:i].min()
+        eurusd_judas = data['High'].iloc[i] > data['High'].iloc[i-lookback:i].max()
+        if not (dxy_raid and eurusd_judas):
+            continue
+        features = [
+            data['RSI'].iloc[i],
+            data['MACD'].iloc[i],
+            data['MACD_hist'].iloc[i],
+            data['MACD_signal'].iloc[i],
+            data['ATR'].iloc[i]
+        ]
+        if np.isnan(features).any():
+            continue
+        entry = data['Open'].iloc[i+1]
+        sl = entry * (1 + 0.004)
+        tp = entry * (1 - 0.01)
+        # Перебираем бары после входа
+        label = None
+        for j in range(i+1, len(data)):
+            bar_low = data['Low'].iloc[j]
+            bar_high = data['High'].iloc[j]
+            # Если оба уровня на одной свече — считаем убытком
+            if bar_low <= tp and bar_high >= sl:
+                label = 0
+                break
+            if bar_high >= sl:
+                label = 0
+                break
+            if bar_low <= tp:
+                label = 1
+                break
+        if label is not None:
+            X.append(features)
+            y.append(label)
+    X, y = np.array(X), np.array(y)
+    print(f'Сформировано сигналов: {len(X)}')
+    # 4. Деление на train/test (80/20, без перемешивания)
+    split = int(len(X) * 0.8)
+    X_train, X_test = X[:split], X[split:]
+    y_train, y_test = y[:split], y[split:]
+    # 5. Обучение модели
+    model = RandomForestClassifier(n_estimators=100, class_weight='balanced', random_state=42)
+    model.fit(X_train, y_train)
+    # 6. Оценка
+    y_pred = model.predict(X_test)
+    print('Test classification report:')
+    print(classification_report(y_test, y_pred, digits=3))
+    # 7. Сохранение
+    joblib.dump(model, model_file)
+    print(f'Модель сохранена в {model_file}')
+
+# ... rest of the file remains unchanged ...
