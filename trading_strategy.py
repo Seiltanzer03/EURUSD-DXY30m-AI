@@ -9,6 +9,7 @@ import time
 import requests
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
+import mplfinance as mpf
 
 def flatten_multiindex_columns(df):
     """
@@ -18,6 +19,23 @@ def flatten_multiindex_columns(df):
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
     return df
+
+# Создаем кастомный стиль для свечей в стиле dark mode
+mc = mpf.make_marketcolors(
+    up='#26a69a',  # Зеленый
+    down='#ef5350', # Красный
+    edge='inherit',
+    wick={'up':'#26a69a', 'down':'#ef5350'},
+    volume='inherit'
+)
+s = mpf.make_mpf_style(
+    base_mpf_style='nightclouds', # Темная тема
+    marketcolors=mc,
+    gridstyle=':',
+    gridcolor='gray',
+    gridaxis='both',
+    y_on_right=False
+)
 
 # Определяем класс стратегии, чтобы он был доступен для импорта
 class SMCStrategy(Strategy):
@@ -107,66 +125,79 @@ def load_data_from_yfinance(ticker, period="7d", interval="30m"):
         print(f"Критическая ошибка при загрузке {ticker}: {e}")
         raise
 
-def plot_backtest_results_to_pdf(stats, data, filename):
+def plot_backtest_results_to_pdf(stats, data, filename, title='Результаты бэктеста'):
     """
-    Создает и сохраняет график результатов бэктеста в виде PDF-файла.
+    Создает и сохраняет кастомный PDF-отчет бэктеста со свечным графиком,
+    линиями сделок и встроенной статистикой.
     """
     try:
-        plt.style.use('dark_background')
-        fig, axs = plt.subplots(
-            3, 1,
-            figsize=(15, 12),
-            sharex=True,
-            gridspec_kw={'height_ratios': [3, 1, 1]}
-        )
-        fig.suptitle('Результаты бэктеста', fontsize=16)
-
-        # 1. График цены и сделок
         trades = stats['_trades']
-        
-        axs[0].plot(data.index, data.Close, label='Цена Close', color='lightgray', alpha=0.8, linewidth=1)
-        
-        if not trades.empty:
-            sell_entries = trades[trades['Size'] < 0]
-            axs[0].plot(sell_entries['EntryTime'], sell_entries['EntryPrice'], 'v', color='#ff4d4d', markersize=7, label='Вход в шорт', linestyle='None')
-            axs[0].plot(sell_entries['ExitTime'], sell_entries['ExitPrice'], '^', color='#00e676', markersize=7, label='Выход', linestyle='None')
-
-        axs[0].set_ylabel('Цена EURUSD')
-        axs[0].legend()
-        axs[0].grid(True, linestyle=':', alpha=0.3)
-        
-        # 2. График капитала (Equity)
         equity_curve = stats['_equity_curve']
-        axs[1].plot(equity_curve.index, equity_curve['Equity'], label='Капитал', color='cyan')
-        axs[1].set_ylabel('Капитал ($)')
-        axs[1].legend()
-        axs[1].grid(True, linestyle=':', alpha=0.3)
+        
+        # --- 1. Подготовка линий для сделок ---
+        trade_lines = []
+        if not trades.empty:
+            for _, trade in trades.iterrows():
+                # Линия от входа до выхода
+                line = [(trade.EntryTime, trade.EntryPrice), (trade.ExitTime, trade.ExitPrice)]
+                trade_lines.append(line)
 
-        # 3. График просадки (Drawdown)
-        axs[2].fill_between(equity_curve.index, equity_curve['DrawdownPct'] * 100, 0, color='red', alpha=0.3, label='Просадка')
-        axs[2].plot(equity_curve.index, equity_curve['DrawdownPct'] * 100, color='red', alpha=0.7, linewidth=1)
-        axs[2].set_ylabel('Просадка (%)')
-        axs[2].legend()
-        axs[2].grid(True, linestyle=':', alpha=0.3)
+        # --- 2. Подготовка текста со статистикой ---
+        stats_text = (
+            f"Start: {stats['Start']}\n"
+            f"End: {stats['End']}\n"
+            f"Duration: {stats['Duration']}\n"
+            f"Exposure Time [%]: {stats['Exposure Time [%]']:.2f}\n"
+            f"Equity Final [$]: {stats['Equity Final [$]']:,.2f}\n"
+            f"Return [%]: {stats['Return [%]']:.2f}\n"
+            f"Max. Drawdown [%]: {stats['Max. Drawdown [%]']:.2f}\n"
+            f"Win Rate [%]: {stats['Win Rate [%]']:.2f}\n"
+            f"# Trades: {stats['# Trades']}\n"
+            f"Profit Factor: {stats['Profit Factor']:.2f}\n"
+            f"SQN: {stats['SQN']:.2f}\n"
+            f"Expectancy [%]: {stats['Expectancy [%]']:.2f}"
+        )
 
-        # Форматирование оси X
-        for ax in axs:
-            ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d %H:%M'))
-            ax.tick_params(axis='x', rotation=30)
-
+        # --- 3. Создание графика ---
+        # Создаем фигуру с двумя панелями: основная для цены и нижняя для equity
+        fig, axes = mpf.plot(
+            data,
+            type='candle',
+            style=s,
+            title=title,
+            ylabel='Цена EURUSD',
+            figsize=(20, 15),
+            returnfig=True,
+            panel_ratios=(4, 1), # 4 части для цены, 1 для equity
+            alines=dict(lines=trade_lines, colors='c', linestyle='--'),
+            # Добавляем панель для equity curve
+            addplot=[mpf.make_addplot(equity_curve['Equity'], panel=1, color='cyan', ylabel='Equity ($)')]
+        )
+        
+        # Добавляем текст со статистикой в левый верхний угол
+        fig.text(0.02, 0.98, stats_text, 
+                 ha='left', va='top', fontsize=10, 
+                 bbox=dict(boxstyle='round', facecolor='black', alpha=0.5))
+        
+        fig.suptitle(title, fontsize=16, y=0.99)
         plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-        plt.savefig(filename, bbox_inches='tight')
+        
+        # Сохраняем и закрываем
+        plt.savefig(filename, bbox_inches='tight', format='pdf')
         plt.close(fig)
-        print(f"График бэктеста успешно сохранен в {filename}")
+        
+        print(f"PDF-отчет бэктеста успешно сохранен в {filename}")
         return filename
     except Exception as e:
-        print(f"Ошибка при создании графика бэктеста: {e}")
+        print(f"Ошибка при создании PDF-отчета: {e}")
+        import traceback
+        traceback.print_exc()
         return None
 
 def run_backtest(threshold=0.55):
     """
     Основная функция для запуска бэктеста.
-    Возвращает статистику, DataFrame сделок и путь к файлу с графиком.
+    Возвращает статистику и путь к файлу с PDF-отчетом.
     """
     print("--- Запуск бэктеста ---")
     
@@ -175,7 +206,7 @@ def run_backtest(threshold=0.55):
         eurusd_data = load_data_from_yfinance('EURUSD=X', period='60d', interval='30m')
         dxy_data = load_data_from_yfinance('DX-Y.NYB', period='60d', interval='30m')
     except Exception as e:
-        return f"Ошибка загрузки данных: {e}", None, None
+        return f"Ошибка загрузки данных: {e}", None
 
     # 2. Подготовка данных
     eurusd_data.ta.rsi(length=14, append=True)
@@ -190,7 +221,7 @@ def run_backtest(threshold=0.55):
     # 3. Загрузка модели
     model_file = 'ml_model_final_fix.joblib'
     if not os.path.exists(model_file):
-        return "Файл модели не найден!", None, None
+        return "Файл модели не найден!", None
     model = joblib.load(model_file)
 
     # 4. Запуск бэктеста
@@ -200,26 +231,23 @@ def run_backtest(threshold=0.55):
     bt = Backtest(data, SMCStrategy, cash=10000, commission=.0002, margin=0.05)
     stats = bt.run()
     
-    # 5. Извлекаем данные о сделках
-    trades = stats['_trades']
-    
-    # 6. Сохранение результатов в виде PDF
+    # 5. Сохранение результатов в виде PDF
     plot_filename = f"backtest_report_{threshold}_{int(time.time())}.pdf"
-    plot_backtest_results_to_pdf(stats, data, plot_filename)
+    plot_backtest_results_to_pdf(stats, data, plot_filename, title=f"Бэктест M30 (60 дней) | Порог: {threshold}")
     
     print("--- Бэктест завершен ---")
-    # Возвращаем статистику, сделки и путь к файлу отчета
-    return stats, trades, data, plot_filename
+    # Возвращаем статистику и путь к файлу отчета
+    return stats, plot_filename
 
-def run_backtest_local(eurusd_csv='eurusd_data_3y.csv', dxy_csv='dxy_data_3y.csv', threshold=0.55):
+def run_backtest_local(eurusd_csv='EURUSD_Candlestick_30_m_BID_18.06.2022-18.06.2025 (2).csv', dxy_csv='DOLLAR.IDXUSD_Candlestick_30_m_BID_18.06.2022-18.06.2025 (2).csv', threshold=0.55):
     """
     Запуск бэктеста на локальных csv-файлах котировок.
-    Возвращает статистику и путь к интерактивному HTML-отчету.
+    Возвращает статистику и путь к PDF-отчету.
     """
     print("--- Запуск ЛОКАЛЬНОГО бэктеста ---")
     # 1. Загрузка данных из CSV
     try:
-        eurusd_data = pd.read_csv(eurusd_csv, parse_dates=['Gmt time'])
+        eurusd_data = pd.read_csv(eurusd_csv, parse_dates=['Gmt time'], dayfirst=True)
         eurusd_data.rename(columns={
             'Gmt time': 'Datetime',
             'Open': 'Open',
@@ -229,16 +257,16 @@ def run_backtest_local(eurusd_csv='eurusd_data_3y.csv', dxy_csv='dxy_data_3y.csv
             'Volume': 'Volume',
         }, inplace=True)
         eurusd_data.set_index('Datetime', inplace=True)
-        eurusd_data.index = pd.to_datetime(eurusd_data.index, format='%d.%m.%Y %H:%M:%S.%f')
+        eurusd_data.index = pd.to_datetime(eurusd_data.index) #, format='%d.%m.%Y %H:%M:%S.%f')
         eurusd_data.index = eurusd_data.index.tz_localize('UTC')
 
-        dxy_data = pd.read_csv(dxy_csv, parse_dates=['Gmt time'])
+        dxy_data = pd.read_csv(dxy_csv, parse_dates=['Gmt time'], dayfirst=True)
         dxy_data.rename(columns={
             'Gmt time': 'Datetime',
             'Low': 'DXY_Low',
         }, inplace=True)
         dxy_data.set_index('Datetime', inplace=True)
-        dxy_data.index = pd.to_datetime(dxy_data.index, format='%d.%m.%Y %H:%M:%S.%f')
+        dxy_data.index = pd.to_datetime(dxy_data.index) #, format='%d.%m.%Y %H:%M:%S.%f')
         dxy_data.index = dxy_data.index.tz_localize('UTC')
     except Exception as e:
         return f"Ошибка загрузки локальных данных: {e}", None
@@ -267,9 +295,9 @@ def run_backtest_local(eurusd_csv='eurusd_data_3y.csv', dxy_csv='dxy_data_3y.csv
     bt = Backtest(data, SMCStrategy, cash=10000, commission=.0002, margin=0.05)
     stats = bt.run()
     
-    # 6. Сохранение результатов в виде интерактивного HTML
-    plot_filename = f"backtest_local_report_{threshold}_{int(time.time())}.html"
-    bt.plot(filename=plot_filename, open_browser=False)
+    # 6. Сохранение результатов в виде интерактивного PDF
+    plot_filename = f"backtest_local_report_{threshold}_{int(time.time())}.pdf"
+    plot_backtest_results_to_pdf(stats, data, plot_filename, title=f"Полный бэктест M30 | Порог: {threshold}")
     
     print("--- Локальный бэктест завершен ---")
     return stats, plot_filename
