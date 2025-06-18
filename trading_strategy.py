@@ -92,6 +92,47 @@ class SMCStrategy(Strategy):
                         pass # Игнорируем ошибки исполнения
             self.signal_to_trade = 0
 
+class SMCStrategyM5(Strategy):
+    """Стратегия для 5-минутного таймфрейма только по SMC-логике (без ML)."""
+    lookback_period = 12
+    sl_ratio = 0.002
+    tp_ratio = 0.005
+    start_hour = 13
+    end_hour = 17
+
+    def init(self):
+        # Убедимся, что DXY_Low доступен
+        if 'DXY_Low' not in self.data.df.columns:
+            raise ValueError("DataFrame должен содержать столбец 'DXY_Low'")
+
+    def next(self):
+        # Проверяем, что есть достаточно данных и нет открытой позиции
+        if len(self.data.Close) < self.lookback_period + 2 or self.position:
+            return
+
+        # Определяем время последней полностью сформированной свечи
+        last_bar_time = self.data.index[-2]
+        current_hour = last_bar_time.hour
+        
+        is_trading_time = self.start_hour <= current_hour <= self.end_hour
+        if not is_trading_time:
+            return
+
+        # Определяем срезы данных
+        last_bar = self.data.df.iloc[-2]
+        previous_bars = self.data.df.iloc[-(self.lookback_period + 2):-2]
+        entry_bar = self.data.df.iloc[-1]
+
+        # Логика SMC
+        dxy_raid = last_bar['DXY_Low'] < previous_bars['DXY_Low'].min()
+        eurusd_judas_swing = last_bar['High'] > previous_bars['High'].max()
+
+        if dxy_raid and eurusd_judas_swing:
+            entry_price = entry_bar['Open']
+            sl_price = entry_price * (1 + self.sl_ratio)
+            tp_price = entry_price * (1 - self.tp_ratio)
+            self.sell(sl=sl_price, tp=tp_price)
+
 def load_data_from_yfinance(ticker, period="7d", interval="30m"):
     """Загружает данные из Yahoo Finance и обрабатывает возможный MultiIndex."""
     print(f"Загрузка {period} данных для {ticker}...")
@@ -115,8 +156,8 @@ def run_backtest(threshold=0.55):
     
     # 1. Загрузка данных
     try:
-        eurusd_data = load_data_from_yfinance('EURUSD=X')
-        dxy_data = load_data_from_yfinance('DX-Y.NYB')
+        eurusd_data = load_data_from_yfinance('EURUSD=X', period='59d')
+        dxy_data = load_data_from_yfinance('DX-Y.NYB', period='59d')
     except Exception as e:
         return f"Ошибка загрузки данных: {e}", None, None
 
@@ -156,6 +197,47 @@ def run_backtest(threshold=0.55):
     except Exception as e:
         print(f"Ошибка при конвертации HTML в PDF: {e}")
         # Если не вышло, возвращаем хотя бы HTML
+        return stats, data, html_filename
+
+def run_backtest_m5():
+    """Запускает бэктест для M5 стратегии на данных Yahoo."""
+    print("--- Запуск M5 бэктеста на данных Yahoo ---")
+    
+    try:
+        # 1. Загрузка данных (30 дней, 5 минут)
+        eurusd_data = load_data_from_yfinance('EURUSD=X', period="30d", interval="5m")
+        dxy_data = load_data_from_yfinance('DX-Y.NYB', period="30d", interval="5m")
+    except Exception as e:
+        return f"Ошибка загрузки данных M5: {e}", None, None
+
+    # 2. Объединение данных
+    dxy_data_renamed = dxy_data.rename(columns={'Low': 'DXY_Low'})
+    data = pd.concat([eurusd_data, dxy_data_renamed['DXY_Low']], axis=1)
+    data.dropna(inplace=True)
+    
+    if data.empty:
+        return "Нет данных после объединения для M5 бэктеста.", None, None
+
+    # 3. Запуск бэктеста
+    bt = Backtest(data, SMCStrategyM5, cash=10000, commission=.0002)
+    try:
+        stats = bt.run()
+    except Exception as e:
+        return f"Ошибка во время выполнения бэктеста M5: {e}", None, None
+        
+    # 4. Сохранение результатов в виде PDF
+    html_filename = f"backtest_m5_report_{int(time.time())}.html"
+    bt.plot(filename=html_filename, open_browser=False)
+
+    pdf_filename = html_filename.replace('.html', '.pdf')
+    try:
+        print(f"Конвертация {html_filename} в {pdf_filename}...")
+        weasyprint.HTML(html_filename).write_pdf(pdf_filename)
+        print("Конвертация завершена.")
+        os.remove(html_filename)
+        return stats, data, pdf_filename
+    except Exception as e:
+        print(f"Ошибка при конвертации M5 HTML в PDF: {e}")
         return stats, data, html_filename
 
 def run_backtest_local(eurusd_file, dxy_file, threshold):
