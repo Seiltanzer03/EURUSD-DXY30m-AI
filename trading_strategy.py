@@ -131,18 +131,14 @@ def plot_backtest_results_to_pdf(stats, data, filename, title='Результа�
     линиями сделок и встроенной статистикой.
     """
     try:
+        if data.empty:
+            print("Ошибка: Нет данных для построения графика.")
+            return None
+            
         trades = stats['_trades']
         equity_curve = stats['_equity_curve']
         
-        # --- 1. Подготовка линий для сделок ---
-        trade_lines = []
-        if not trades.empty:
-            for _, trade in trades.iterrows():
-                # Линия от входа до выхода
-                line = [(trade.EntryTime, trade.EntryPrice), (trade.ExitTime, trade.ExitPrice)]
-                trade_lines.append(line)
-
-        # --- 2. Подготовка текста со статистикой ---
+        # --- 1. Подготовка текста со статистикой ---
         stats_text = (
             f"Start: {stats['Start']}\n"
             f"End: {stats['End']}\n"
@@ -158,38 +154,45 @@ def plot_backtest_results_to_pdf(stats, data, filename, title='Результа�
             f"Expectancy [%]: {stats['Expectancy [%]']:.2f}"
         )
 
-        # --- 3. Создание графика ---
-        # Создаем фигуру с двумя панелями: основная для цены и нижняя для equity
+        # --- 2. Создание графика ---
         fig, axes = mpf.plot(
             data,
             type='candle',
             style=s,
-            title=title,
             ylabel='Цена EURUSD',
-            figsize=(20, 15),
+            figsize=(25, 18),
             returnfig=True,
-            panel_ratios=(4, 1), # 4 части для цены, 1 для equity
-            alines=dict(lines=trade_lines, colors='c', linestyle='--'),
-            # Добавляем панель для equity curve
+            panel_ratios=(8, 2), # 8 частей для цены, 2 для equity
             addplot=[mpf.make_addplot(equity_curve['Equity'], panel=1, color='cyan', ylabel='Equity ($)')]
         )
+        ax_main = axes[0]
+
+        # --- 3. Нанесение линий сделок на график ---
+        if not trades.empty:
+            for _, trade in trades.iterrows():
+                ax_main.plot(
+                    [trade.EntryTime, trade.ExitTime],
+                    [trade.EntryPrice, trade.ExitPrice],
+                    'c--', # Cyan, dashed line
+                    linewidth=1.0
+                )
         
-        # Добавляем текст со статистикой в левый верхний угол
+        # --- 4. Добавление текста и заголовка ---
         fig.text(0.02, 0.98, stats_text, 
-                 ha='left', va='top', fontsize=10, 
-                 bbox=dict(boxstyle='round', facecolor='black', alpha=0.5))
+                 ha='left', va='top', fontsize=12,
+                 fontfamily='monospace', # Моноширинный шрифт для аккуратности
+                 bbox=dict(boxstyle='round', facecolor='#2E2E2E', alpha=0.8))
         
-        fig.suptitle(title, fontsize=16, y=0.99)
-        plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+        fig.suptitle(title, fontsize=20, y=0.99)
         
-        # Сохраняем и закрываем
-        plt.savefig(filename, bbox_inches='tight', format='pdf')
+        # --- 5. Сохранение ---
+        fig.savefig(filename, bbox_inches='tight', format='pdf', dpi=200)
         plt.close(fig)
         
         print(f"PDF-отчет бэктеста успешно сохранен в {filename}")
         return filename
     except Exception as e:
-        print(f"Ошибка при создании PDF-отчета: {e}")
+        print(f"Критическая ошибка при создании PDF-отчета: {e}")
         import traceback
         traceback.print_exc()
         return None
