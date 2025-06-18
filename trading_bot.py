@@ -191,90 +191,32 @@ async def check(update: Update, context: ContextTypes.DEFAULT_TYPE):
     task.add_done_callback(background_tasks.discard)
 
 async def backtest(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Запускает бэктест M30, отправляет отчет и PNG-изображения всех найденных сделок."""
+    """Запускает бэктест M30, отправляет единый PDF-отчет."""
     chat_id = update.message.chat_id
     threshold = 0.55
-    await update.message.reply_text(f'▶️ Запускаю M30 бэктест за 2 месяца с порогом {threshold}. Это может занять несколько минут...')
+    await update.message.reply_text(f'▶️ Запускаю M30 бэктест за 2 месяца с порогом {threshold}. Готовлю PDF-отчет, это может занять несколько минут...')
     
     try:
         # Запускаем в отдельном потоке, чтобы не блокировать бота
-        stats, trades, data, plot_filename = await asyncio.to_thread(run_backtest, threshold)
+        stats, plot_filename = await asyncio.to_thread(run_backtest, threshold)
         
         # Если stats - это строка, значит, произошла ошибка
         if isinstance(stats, str):
             await update.message.reply_text(f"❌ Ошибка: {stats}")
             return
             
-        # 1. Отправляем текстовый отчет со статистикой
-        stats_text = format_stats_for_telegram(stats)
-        await update.message.reply_text(f"📊 *Результаты бэктеста (M30)*\n\n{stats_text}", parse_mode='Markdown')
-
-        # 2. Генерируем и отправляем изображения для каждой сделки
-        if trades is not None and not trades.empty:
-            await bot.send_message(chat_id, f"🖼️ Найдено сделок: {len(trades)}. Генерирую изображения...")
-            
-            image_paths_to_delete = []
-            media_group = []
-            opened_files = []
-
-            for i, trade in trades.iterrows():
-                try:
-                    entry_time = trade['EntryTime']
-                    entry_price = trade['EntryPrice']
-                    sl_price = trade['SlPrice']
-                    tp_price = trade['TpPrice']
-
-                    # Находим индекс входа, чтобы взять срез данных для графика
-                    entry_idx = data.index.get_loc(entry_time, method='nearest')
-                    plot_data = data.iloc[max(0, entry_idx - 50) : entry_idx + 50]
-                    
-                    plot_title = f"M30 Trade #{i+1} at {entry_time.strftime('%Y-%m-%d %H:%M')}"
-                    png_filename = f"m30_trade_{i}_{chat_id}.png"
-                    
-                    # Генерируем график в потоке
-                    await asyncio.to_thread(
-                        create_signal_plot, 
-                        plot_data, entry_price, sl_price, tp_price, plot_title, png_filename
-                    )
-
-                    if os.path.exists(png_filename):
-                        image_paths_to_delete.append(png_filename)
-                        f = open(png_filename, 'rb')
-                        opened_files.append(f)
-                        caption = f"Сделка #{i+1}/{len(trades)}" if i == 0 else None
-                        media_group.append(InputMediaPhoto(media=f, caption=caption))
-                        
-                        # Отправляем группу, если она заполнилась (макс. 10 в группе)
-                        if len(media_group) == 10:
-                            await bot.send_media_group(chat_id, media=media_group)
-                            # Очищаем для следующей пачки
-                            for fo in opened_files: fo.close()
-                            media_group = []
-                            opened_files = []
-                
-                except Exception as e:
-                    logging.error(f"Ошибка при создании изображения для сделки {i}: {e}")
-
-            # Отправляем остатки, если есть
-            if media_group:
-                await bot.send_media_group(chat_id, media=media_group)
-            
-            # Очистка
-            for f in opened_files: f.close()
-            for path in image_paths_to_delete:
-                if os.path.exists(path): os.remove(path)
-        else:
-            await bot.send_message(chat_id, "Сделок для визуализации не найдено.")
-
-        # 3. Отправляем итоговый PDF-отчет
+        # Отправляем итоговый PDF-отчет
         if plot_filename and os.path.exists(plot_filename):
             await update.message.reply_document(
                 document=open(plot_filename, 'rb'),
-                caption=f"📈 Итоговый PDF-отчет по бэктесту M30"
+                caption=f"📈 *Результаты бэктеста (M30, 60 дней)*\n\n{format_stats_for_telegram(stats)}",
+                parse_mode='Markdown'
             )
             os.remove(plot_filename)
         else:
-            await update.message.reply_text("Не удалось сгенерировать итоговый PDF-отчет.")
+            # Отправляем просто текст, если график не создался
+            stats_text = format_stats_for_telegram(stats)
+            await update.message.reply_text(f"📊 *Результаты бэктеста (M30)*\n\n{stats_text}\n\n(Не удалось сгенерировать PDF-отчет)", parse_mode='Markdown')
 
     except Exception as e:
         logging.error(f"Ошибка при выполнении бэктеста: {e}", exc_info=True)
@@ -311,7 +253,7 @@ async def run_backtest_local_async(chat_id, threshold):
             await bot.send_message(chat_id, f"❌ Ошибка: Не найдены файлы для бэктеста. Убедитесь, что `{eurusd_file}` и `{dxy_file}` находятся в директории проекта.")
             return
 
-        # Для локального бэктеста получаем HTML отчет
+        # Для локального бэктеста получаем PDF отчет
         stats, plot_file = await asyncio.to_thread(
             run_backtest_local, 
             eurusd_file, 
@@ -324,22 +266,21 @@ async def run_backtest_local_async(chat_id, threshold):
             await bot.send_message(chat_id, f"❌ Ошибка во время локального бэктеста: {stats}")
             return
 
-        # Отправляем текстовую статистику
-        stats_text = format_stats_for_telegram(stats)
-        await bot.send_message(chat_id, f"📊 *Результаты полного бэктеста:*\n\n{stats_text}", parse_mode='Markdown')
-        
-        # Отправляем HTML отчет
+        # Отправляем PDF отчет
         if plot_file and os.path.exists(plot_file):
-            with open(plot_file, 'rb') as f:
-                await bot.send_document(
-                    chat_id, 
-                    document=f, 
-                    filename=os.path.basename(plot_file), # Явно указываем имя файла
-                    caption=f"Интерактивный HTML-отчет по полному бэктесту (M30) с фильтром {threshold}. Скачайте и откройте в браузере."
-                )
+            await bot.send_document(
+                chat_id, 
+                document=open(plot_file, 'rb'),
+                filename=os.path.basename(plot_file), 
+                caption=(f"📈 *Результаты полного бэктеста (M30)*\n\n"
+                         f"Отчет со статистикой, графиком капитала и сделками внутри.\n\n"
+                         f"{format_stats_for_telegram(stats)}"),
+                parse_mode='Markdown'
+            )
             os.remove(plot_file)
         else:
-            await bot.send_message(chat_id, f"❌ Не удалось сгенерировать HTML-отчет.")
+            stats_text = format_stats_for_telegram(stats)
+            await bot.send_message(chat_id, f"📊 *Результаты полного бэктеста:*\n\n{stats_text}\n\n(Не удалось сгенерировать PDF-отчет)", parse_mode='Markdown')
             
     except Exception as e:
         logging.error(f"Критическая ошибка в задаче локального бэктеста: {e}", exc_info=True)
