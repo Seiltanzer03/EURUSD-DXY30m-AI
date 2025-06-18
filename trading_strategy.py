@@ -7,6 +7,8 @@ import numpy as np
 import yfinance as yf
 import time
 import requests
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
 
 def flatten_multiindex_columns(df):
     """
@@ -105,6 +107,63 @@ def load_data_from_yfinance(ticker, period="7d", interval="30m"):
         print(f"Критическая ошибка при загрузке {ticker}: {e}")
         raise
 
+def plot_backtest_results_to_image(bt, stats, filename):
+    """
+    Создает и сохраняет график результатов бэктеста в виде изображения PNG.
+    """
+    try:
+        plt.style.use('dark_background')
+        fig, axs = plt.subplots(
+            3, 1,
+            figsize=(15, 12),
+            sharex=True,
+            gridspec_kw={'height_ratios': [3, 1, 1]}
+        )
+        fig.suptitle('Результаты бэктеста', fontsize=16)
+
+        # 1. График цены и сделок
+        data = bt.data
+        trades = stats['_trades']
+        
+        axs[0].plot(data.index, data.Close, label='Цена Close', color='lightgray', alpha=0.8, linewidth=1)
+        
+        if not trades.empty:
+            sell_entries = trades[trades['Size'] < 0]
+            axs[0].plot(sell_entries['EntryTime'], sell_entries['EntryPrice'], 'v', color='#ff4d4d', markersize=7, label='Вход в шорт', linestyle='None')
+            axs[0].plot(sell_entries['ExitTime'], sell_entries['ExitPrice'], '^', color='#00e676', markersize=7, label='Выход', linestyle='None')
+
+        axs[0].set_ylabel('Цена EURUSD')
+        axs[0].legend()
+        axs[0].grid(True, linestyle=':', alpha=0.3)
+        
+        # 2. График капитала (Equity)
+        equity_curve = stats['_equity_curve']
+        axs[1].plot(equity_curve.index, equity_curve['Equity'], label='Капитал', color='cyan')
+        axs[1].set_ylabel('Капитал ($)')
+        axs[1].legend()
+        axs[1].grid(True, linestyle=':', alpha=0.3)
+
+        # 3. График просадки (Drawdown)
+        axs[2].fill_between(equity_curve.index, equity_curve['DrawdownPct'] * 100, 0, color='red', alpha=0.3, label='Просадка')
+        axs[2].plot(equity_curve.index, equity_curve['DrawdownPct'] * 100, color='red', alpha=0.7, linewidth=1)
+        axs[2].set_ylabel('Просадка (%)')
+        axs[2].legend()
+        axs[2].grid(True, linestyle=':', alpha=0.3)
+
+        # Форматирование оси X
+        for ax in axs:
+            ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d %H:%M'))
+            ax.tick_params(axis='x', rotation=30)
+
+        plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+        plt.savefig(filename, bbox_inches='tight', dpi=150)
+        plt.close(fig)
+        print(f"График бэктеста успешно сохранен в {filename}")
+        return filename
+    except Exception as e:
+        print(f"Ошибка при создании графика бэктеста: {e}")
+        return None
+
 def run_backtest(threshold=0.67):
     """Основная функция для запуска бэктеста."""
     print("--- Запуск бэктеста ---")
@@ -139,9 +198,9 @@ def run_backtest(threshold=0.67):
     bt = Backtest(data, SMCStrategy, cash=10000, commission=.0002, margin=0.05)
     stats = bt.run()
     
-    # 5. Сохранение результатов
-    plot_filename = f"backtest_report_{threshold}_{int(time.time())}.html"
-    bt.plot(filename=plot_filename, open_browser=False)
+    # 5. Сохранение результатов в виде изображения
+    plot_filename = f"backtest_report_{threshold}_{int(time.time())}.png"
+    plot_backtest_results_to_image(bt, stats, plot_filename)
     
     print("--- Бэктест завершен ---")
     return stats, plot_filename
@@ -197,8 +256,10 @@ def run_backtest_local(eurusd_csv='eurusd_data_3y.csv', dxy_csv='dxy_data_3y.csv
     SMCStrategy.prediction_threshold = threshold
     bt = Backtest(data, SMCStrategy, cash=10000, commission=.0002, margin=0.05)
     stats = bt.run()
-    plot_filename = f"backtest_local_report_{threshold}_{int(time.time())}.html"
-    bt.plot(filename=plot_filename, open_browser=False)
+    
+    # 5. Сохранение результатов в виде изображения
+    plot_filename = f"backtest_local_report_{threshold}_{int(time.time())}.png"
+    plot_backtest_results_to_image(bt, stats, plot_filename)
     print("--- Локальный бэктест завершен ---")
     return stats, plot_filename
 
@@ -282,8 +343,11 @@ def run_backtest_local_no_ml(eurusd_csv='eurusd_data_2y.csv', dxy_csv='dxy_data_
 
     bt = Backtest(data, SMCStrategyNoML, cash=10000, commission=.0002, margin=0.05)
     stats = bt.run()
-    plot_filename = f"backtest_local_no_ml_report_{int(time.time())}.html"
-    bt.plot(filename=plot_filename, open_browser=False)
+    
+    # 5. Сохранение результатов в виде изображения
+    plot_filename = f"backtest_no_ml_report_{int(time.time())}.png"
+    plot_backtest_results_to_image(bt, stats, plot_filename)
+
     print("--- Локальный бэктест БЕЗ ML-фильтра завершен ---")
     return stats, plot_filename
 
