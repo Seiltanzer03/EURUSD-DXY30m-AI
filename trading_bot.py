@@ -7,7 +7,7 @@ import yfinance as yf
 import telegram
 from flask import Flask, request
 import asyncio
-from trading_strategy import run_backtest
+from trading_strategy import run_backtest, run_backtest_local
 import threading
 import logging
 import subprocess
@@ -245,7 +245,8 @@ async def handle_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "/unsubscribe - Отписаться\n"
             "/check - Проверить сигналы прямо сейчас\n"
             "/backtest - Бэктест M30 на данных Yahoo\n"
-            "/backtest_local 0.55 - Локальный бэктест M30"
+            "/backtest_local 0.55 - Локальный бэктест M30\n"
+            "/fullbacktest - Полный бэктест на локальных файлах за 3 года"
         )
     elif command == '/subscribe':
         if add_subscriber(chat_id):
@@ -268,6 +269,8 @@ async def handle_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await backtest(update, context) # Используем новую функцию-обработчик
     elif command == '/backtest_local':
         await backtest_local(update, context) # Используем новую функцию-обработчик
+    elif command == '/fullbacktest':
+        await fullbacktest(update, context)
     else:
         await update.message.reply_text(f"Команда '{text}' не распознана.")
 
@@ -446,6 +449,51 @@ async def run_backtest_local_async(chat_id, threshold):
         logging.error(f"Критическая ошибка в задаче локального бэктеста: {e}")
         await bot.send_message(chat_id, f"❌ Критическая ошибка: {e}")
 
+async def fullbacktest(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Запускает полный бэктест на заданных файлах."""
+    chat_id = update.message.chat.id
+    loop = get_background_loop()
+    task = asyncio.run_coroutine_threadsafe(run_fullbacktest_async(chat_id), loop)
+    background_tasks.add(task)
+    task.add_done_callback(background_tasks.discard)
+
+async def run_fullbacktest_async(chat_id):
+    """Асинхронно запускает полный бэктест."""
+    threshold = 0.55
+    eurusd_file = 'EURUSD_Candlestick_30_m_BID_18.06.2022-18.06.2025 (2).csv'
+    dxy_file = 'DOLLAR.IDXUSD_Candlestick_30_m_BID_18.06.2022-18.06.2025 (2).csv'
+
+    logging.info(f"Запуск полного бэктеста для {chat_id} с порогом {threshold}.")
+    await bot.send_message(chat_id, f"✅ Запускаю полный бэктест с фильтром {threshold}. Это может занять несколько минут...")
+    
+    try:
+        # Проверка наличия файлов
+        if not os.path.exists(eurusd_file) or not os.path.exists(dxy_file):
+            await bot.send_message(chat_id, f"❌ Ошибка: Не найдены файлы для бэктеста. Убедитесь, что `{eurusd_file}` и `{dxy_file}` находятся в директории проекта.")
+            return
+
+        # Запускаем в отдельном потоке, чтобы не блокировать бота
+        stats, plot_file = await asyncio.to_thread(
+            run_backtest_local, 
+            eurusd_file, 
+            dxy_file,
+            threshold
+        )
+        
+        if plot_file and os.path.exists(plot_file):
+            stats_text = format_stats_for_telegram(stats)
+            await bot.send_message(chat_id, f"📊 Результаты полного бэктеста:\n\n{stats_text}", parse_mode='Markdown')
+            
+            with open(plot_file, 'rb') as f:
+                await bot.send_document(chat_id, document=f, caption=f"Подробный отчет по полному бэктесту с фильтром {threshold}")
+            os.remove(plot_file)
+        else:
+            await bot.send_message(chat_id, f"❌ Ошибка во время полного бэктеста: {stats}")
+            
+    except Exception as e:
+        logging.error(f"Критическая ошибка в задаче полного бэктеста: {e}")
+        await bot.send_message(chat_id, f"❌ Критическая ошибка: {e}")
+
 if __name__ == "__main__":
     # Локальный запуск для отладки
     logging.info("Запуск бота в режиме опроса для локальной отладки...")
@@ -467,6 +515,7 @@ if __name__ == "__main__":
     application.add_handler(CommandHandler("check", handle_update))
     application.add_handler(CommandHandler("backtest", backtest))
     application.add_handler(CommandHandler("backtest_local", backtest_local))
+    application.add_handler(CommandHandler("fullbacktest", fullbacktest))
     
     # Запуск бота
     application.run_polling() 
