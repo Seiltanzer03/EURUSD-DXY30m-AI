@@ -10,9 +10,8 @@ import asyncio
 from trading_strategy import run_backtest, run_backtest_local
 import threading
 import logging
-import subprocess
 import re
-from signal_core import generate_signal_and_plot, generate_signal_and_plot_30m, TIMEFRAME
+from signal_core import generate_signal_and_plot, generate_signal_and_plot_30m
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
@@ -25,7 +24,6 @@ logging.basicConfig(
 )
 
 # Глобальные переменные для "ленивой" инициализации.
-# Они будут созданы только один раз для каждого рабочего процесса Gunicorn.
 _background_loop = None
 _loop_thread = None
 _thread_lock = threading.Lock()
@@ -40,6 +38,10 @@ def get_background_loop():
             
             def start_loop(loop):
                 asyncio.set_event_loop(loop)
+                # Инициализируем приложение PTB внутри нового цикла
+                logging.info("Initializing PTB application in background thread...")
+                loop.run_until_complete(application.initialize())
+                logging.info("PTB application initialized.")
                 loop.run_forever()
 
             _loop_thread = threading.Thread(target=start_loop, args=(_background_loop,), daemon=True)
@@ -54,13 +56,9 @@ app = Flask(__name__)
 
 # Загрузка секретов из переменных окружения
 TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
-TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID') # ID администратора для отладки
 bot = telegram.Bot(token=TELEGRAM_BOT_TOKEN)
 
 # Настройки стратегии
-MODEL_FILE = 'ml_model_final_fix.joblib'
-PREDICTION_THRESHOLD = 0.67 # Оптимальный порог для live-сигналов
-LOOKBACK_PERIOD = 20
 SUBSCRIBERS_FILE = 'subscribers.json'
 
 # --- 2. Управление Подписчиками ---
@@ -91,140 +89,40 @@ def remove_subscriber(chat_id):
         return True
     return False
 
-# --- 3. Основная логика стратегии ---
-def get_live_data():
-    """'Пуленепробиваемая' загрузка данных."""
-    print("Загрузка свежих данных...")
-    try:
-        eurusd_data = yf.download(tickers='EURUSD=X', period='5d', interval='30m')
-        if isinstance(eurusd_data.columns, pd.MultiIndex):
-            eurusd_data.columns = eurusd_data.columns.get_level_values(0)
+# --- 3. Вспомогательные функции ---
 
-        if eurusd_data.empty:
-            print("Рынок EUR/USD закрыт или данные недоступны.")
-            return None
-            
-        dxy_data = yf.download(tickers='DX-Y.NYB', period='5d', interval='30m')
-        if isinstance(dxy_data.columns, pd.MultiIndex):
-            dxy_data.columns = dxy_data.columns.get_level_values(0)
+def format_stats_for_telegram(stats):
+    """Форматирует статистику из backtesting.py для красивого вывода."""
+    if isinstance(stats, str): # Если это сообщение об ошибке
+        return f"`{stats}`"
 
-        if dxy_data.empty:
-            print("Рынок DXY закрыт или данные недоступны.")
-            return None
+    # Преобразуем Series в словарь для удобного доступа
+    stats_dict = stats.to_dict()
+    
+    # Извлекаем нужные метрики
+    start_date = stats_dict.get('Start')
+    end_date = stats_dict.get('End')
+    duration = stats_dict.get('Duration')
+    equity_final = stats_dict.get('Equity Final [$]')
+    equity_peak = stats_dict.get('Equity Peak [$]')
+    return_pct = stats_dict.get('Return [%]')
+    buy_hold_return_pct = stats_dict.get('Buy & Hold Return [%]')
+    max_drawdown_pct = stats_dict.get('Max. Drawdown [%]')
+    win_rate_pct = stats_dict.get('Win Rate [%]')
+    profit_factor = stats_dict.get('Profit Factor')
+    trades = stats_dict.get('# Trades')
 
-        eurusd_data.reset_index(inplace=True)
-        dxy_data.reset_index(inplace=True)
-
-        date_col = next(col for col in ['Datetime', 'Date', 'index'] if col in eurusd_data.columns)
-        eurusd_data.rename(columns={date_col: 'Datetime'}, inplace=True)
-        date_col = next(col for col in ['Datetime', 'Date', 'index'] if col in dxy_data.columns)
-        dxy_data.rename(columns={date_col: 'Datetime'}, inplace=True)
-        
-        eurusd_data.ta.rsi(length=14, append=True)
-        eurusd_data.ta.macd(fast=12, slow=26, signal=9, append=True)
-        eurusd_data.ta.atr(length=14, append=True)
-        eurusd_data.rename(columns={'RSI_14':'RSI', 'MACD_12_26_9':'MACD', 'MACDh_12_26_9':'MACD_hist', 'MACDs_12_26_9':'MACD_signal', 'ATRr_14':'ATR'}, inplace=True)
-        
-        eurusd_data.set_index('Datetime', inplace=True)
-        dxy_data.set_index('Datetime', inplace=True)
-        
-        dxy_data_renamed = dxy_data.rename(columns={'Low': 'DXY_Low'})
-        data = pd.concat([eurusd_data, dxy_data_renamed['DXY_Low']], axis=1)
-        data.dropna(inplace=True)
-        
-        print("Данные успешно обработаны.")
-        return data
-    except Exception as e:
-        print(f"Критическая ошибка при загрузке данных: {e}")
-        return None
-
-def check_signal_30m(model):
-    """Проверяет сигнал на 30-минутном таймфрейме."""
-    try:
-        # Загрузка и подготовка данных
-        data = get_live_data()
-        if data is None: return "Рынок закрыт, проверка отменена."
-
-        last_bar = data.iloc[-2]
-        previous_bars = data.iloc[-22:-2]
-        
-        # Проверка условий
-        is_trading_time = 13 <= last_bar.name.hour <= 17
-        dxy_raid = last_bar['DXY_Low'] < previous_bars['DXY_Low'].min()
-        eurusd_judas_swing = last_bar['High'] > previous_bars['High'].max()
-        
-        if is_trading_time and dxy_raid and eurusd_judas_swing:
-            features = pd.DataFrame([{
-                'RSI': last_bar['RSI'],
-                'MACD': last_bar['MACD'],
-                'MACD_hist': last_bar['MACD_hist'],
-                'MACD_signal': last_bar['MACD_signal'],
-                'ATR': last_bar['ATR']
-            }])
-            win_probability = model.predict_proba(features)[0][1]
-
-            if win_probability >= 0.4:
-                entry_price = data.iloc[-1]['Open']
-                sl = entry_price * (1 + 0.004)
-                tp = entry_price * (1 - 0.01)
-                
-                message = (
-                    f"🚨 СИГНАЛ (M30) 🚨\n"
-                    f"🔔 **Short EURUSD**\n"
-                    f"📈 **Вероятность TP:** {win_probability:.2%}\n"
-                    f"🔵 **Вход:** `{entry_price:.5f}`\n"
-                    f"🔴 **Stop-Loss:** `{sl:.5f}`\n"
-                    f"🟢 **Take-Profit:** `{tp:.5f}`\n"
-                    f"🕗 **Время:** `{last_bar.name.strftime('%Y-%m-%d %H:%M:%S UTC')}`"
-                )
-                return message
-            else:
-                return f"Технический сетап есть, но ML-фильтр ({win_probability:.2%}) не пройден."
-        else:
-            return f"Нет сигнала на M30. Время: {data.iloc[-1].name.strftime('%Y-%m-%d %H:%M:%S UTC')}"
-
-    except Exception as e:
-        logging.error(f"Ошибка при проверке сигнала: {e}")
-        return f"Ошибка получения данных или обработки сигнала: {e}"
-
-async def run_backtest_async(chat_id, threshold):
-    """Асинхронная функция для запуска бэктеста."""
-    logging.info(f"Executing run_backtest_async for chat_id {chat_id} with threshold {threshold}.")
-    try:
-        # 1. Уведомляем пользователя о начале
-        await bot.send_message(chat_id, f"✅ Запускаю бэктест с фильтром {threshold}. Это может занять несколько минут...")
-        
-        # 2. Запускаем ресурсоемкую функцию бэктеста в отдельном потоке, не блокируя event loop
-        stats, plot_file = await asyncio.to_thread(run_backtest, threshold)
-        
-        # 3. Отправляем результаты
-        if plot_file:
-            # Отправляем статистику
-            await bot.send_message(chat_id, f"📊 Результаты бэктеста:\n\n<pre>{stats}</pre>", parse_mode='HTML')
-            
-            # Отправляем HTML-отчет
-            with open(plot_file, 'rb') as f:
-                await bot.send_document(chat_id, document=f, caption=f"Подробный отчет по бэктесту с фильтром {threshold}")
-            os.remove(plot_file) # Удаляем файл после отправки
-        else:
-            # Если бэктест не удался, stats содержит текст ошибки
-            await bot.send_message(chat_id, f"❌ Ошибка во время бэктеста: {stats}")
-            
-    except Exception as e:
-        await bot.send_message(chat_id, f"❌ Критическая ошибка в задаче бэктеста: {e}")
-
-# Вспомогательная функция для парсинга текста и пути к графику
-def parse_signal_output(output):
-    lines = output.strip().split('\n')
-    message_lines = []
-    image_path = None
-    for line in lines:
-        if line.startswith('GRAPH_PATH:'):
-            image_path = line.split(':', 1)[1].strip()
-        else:
-            message_lines.append(line)
-    message = '\n'.join(message_lines)
-    return message, image_path
+    return (
+        f"*Период:* `{start_date} - {end_date}`\n"
+        f"*Длительность:* `{duration}`\n\n"
+        f"*Итоговый капитал:* `${equity_final:,.2f}`\n"
+        f"*Доходность:* `{return_pct:.2f}%`\n"
+        f"*Max просадка:* `{max_drawdown_pct:.2f}%`\n\n"
+        f"*Всего сделок:* `{int(trades)}`\n"
+        f"*Процент побед:* `{win_rate_pct:.2f}%`\n"
+        f"*Profit Factor:* `{profit_factor:.2f}`\n"
+        f"*Доходность Buy & Hold:* `{buy_hold_return_pct:.2f}%`"
+    )
 
 # --- 4. Обработчики команд ---
 
@@ -238,7 +136,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/check - Проверить сигналы прямо сейчас\n"
         "/backtest - Бэктест M30 на данных Yahoo\n"
         "/backtest_local 0.55 - Локальный бэктест M30\n"
-        "/fullbacktest - Полный бэктест на локальных файлах за 3 года"
+        "/fullbacktest - Полный бэктест на файлах проекта"
     )
 
 async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -263,12 +161,92 @@ async def check(update: Update, context: ContextTypes.DEFAULT_TYPE):
     background_tasks.add(task)
     task.add_done_callback(background_tasks.discard)
 
+async def backtest(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Запускает бэктест по команде с фиксированным порогом 0.55."""
+    threshold = 0.55
+    await update.message.reply_text('Запускаю бэктест с котировками Yahoo...')
+    
+    try:
+        stats, plot_filename = run_backtest(threshold)
+        if plot_filename:
+            await update.message.reply_document(
+                document=open(plot_filename, 'rb'),
+                caption=f"📈 **Результаты бэктеста (Yahoo)**\n\n{format_stats_for_telegram(stats)}",
+                parse_mode='Markdown'
+            )
+            os.remove(plot_filename)
+        else:
+            await update.message.reply_text("Не удалось сгенерировать отчет.")
+    except Exception as e:
+        logging.error(f"Ошибка при выполнении бэктеста: {e}")
+        await update.message.reply_text(f"Произошла ошибка при выполнении бэктеста: {e}")
+
+async def backtest_local(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Запускает локальный бэктест по команде."""
+    try:
+        threshold_str = context.args[0]
+        threshold = float(threshold_str)
+        if not (0 <= threshold <= 1):
+            raise ValueError("Порог должен быть между 0 и 1.")
+    except (IndexError, ValueError):
+        await update.message.reply_text('Пожалуйста, укажите порог для бэктеста, например: /backtest_local 0.55')
+        return
+
+    chat_id = update.message.chat.id
+    
+    loop = get_background_loop()
+    task = asyncio.run_coroutine_threadsafe(run_backtest_local_async(chat_id, threshold), loop)
+    background_tasks.add(task)
+    task.add_done_callback(background_tasks.discard)
+
+async def run_backtest_local_async(chat_id, threshold):
+    """Асинхронно запускает локальный бэктест."""
+    eurusd_file = 'EURUSD_Candlestick_30_m_BID_18.06.2022-18.06.2025 (2).csv'
+    dxy_file = 'DOLLAR.IDXUSD_Candlestick_30_m_BID_18.06.2022-18.06.2025 (2).csv'
+    
+    logging.info(f"Запуск локального бэктеста для {chat_id} с порогом {threshold}.")
+    await bot.send_message(chat_id, f"✅ Запускаю локальный бэктест с фильтром {threshold}. Это может занять несколько минут...")
+    
+    try:
+        if not os.path.exists(eurusd_file) or not os.path.exists(dxy_file):
+            await bot.send_message(chat_id, f"❌ Ошибка: Не найдены файлы для бэктеста. Убедитесь, что `{eurusd_file}` и `{dxy_file}` находятся в директории проекта.")
+            return
+
+        stats, plot_file = await asyncio.to_thread(
+            run_backtest_local, 
+            eurusd_file, 
+            dxy_file,
+            threshold
+        )
+        
+        if plot_file and os.path.exists(plot_file):
+            stats_text = format_stats_for_telegram(stats)
+            await bot.send_message(chat_id, f"📊 Результаты бэктеста:\n\n{stats_text}", parse_mode='Markdown')
+            
+            with open(plot_file, 'rb') as f:
+                await bot.send_document(chat_id, document=f, caption=f"Подробный отчет по локальному бэктесту с фильтром {threshold}")
+            os.remove(plot_file)
+        else:
+            await bot.send_message(chat_id, f"❌ Ошибка во время локального бэктеста: {stats}")
+            
+    except Exception as e:
+        logging.error(f"Критическая ошибка в задаче локального бэктеста: {e}")
+        await bot.send_message(chat_id, f"❌ Критическая ошибка: {e}")
+
+async def fullbacktest(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Запускает полный бэктест на заданных файлах."""
+    chat_id = update.message.chat_id
+    loop = get_background_loop()
+    # Просто передаем управление в уже существующую функцию для локального бэктеста с фиксированным порогом
+    task = asyncio.run_coroutine_threadsafe(run_backtest_local_async(chat_id, 0.55), loop)
+    background_tasks.add(task)
+    task.add_done_callback(background_tasks.discard)
+
 async def send_signal_to_chat(chat_id, signal_data):
     """Отправляет один сформатированный сигнал в указанный чат."""
     signal, entry, sl, tp, last_bar, image_path, timeframe = signal_data
 
     if not signal:
-        # await bot.send_message(chat_id, f"({timeframe}) Технического сетапа нет.")
         return
 
     message = (
@@ -283,25 +261,26 @@ async def send_signal_to_chat(chat_id, signal_data):
     try:
         if image_path and os.path.exists(image_path):
             with open(image_path, 'rb') as img:
-                await bot.send_photo(chat_id, photo=img, caption=message)
+                await bot.send_photo(chat_id, photo=img, caption=message, parse_mode='Markdown')
+            os.remove(image_path) # Удаляем временный файл
         else:
-            await bot.send_message(chat_id, message)
+            await bot.send_message(chat_id, message, parse_mode='Markdown')
     except Exception as e:
         logging.error(f"Не удалось отправить сигнал в чат {chat_id}: {e}")
 
 async def check_and_send_signals_to_chat(chat_id):
     """Проверяет оба ТФ и отправляет результат в указанный чат."""
     try:
-        # Проверка M5
+        await bot.send_message(chat_id, "Проверяю M5...")
         signal_data_5m = generate_signal_and_plot()
-        if signal_data_5m[0]: # Если есть сигнал
+        if signal_data_5m[0]: 
             await send_signal_to_chat(chat_id, signal_data_5m)
         else:
             await bot.send_message(chat_id, "На M5 сетапа нет.")
 
-        # Проверка M30
+        await bot.send_message(chat_id, "Проверяю M30...")
         signal_data_30m = generate_signal_and_plot_30m()
-        if signal_data_30m[0]: # Если есть сигнал
+        if signal_data_30m[0]:
             await send_signal_to_chat(chat_id, signal_data_30m)
         else:
             await bot.send_message(chat_id, "На M30 сетапа нет.")
@@ -324,7 +303,6 @@ def webhook():
         update = telegram.Update.de_json(update_data, bot)
         
         loop = get_background_loop()
-        # Используем встроенный обработчик, который сам вызовет нужную команду с (update, context)
         asyncio.run_coroutine_threadsafe(application.process_update(update), loop)
         logging.info("application.process_update task scheduled successfully.")
         
@@ -356,7 +334,6 @@ async def check_and_send_to_subscribers():
 
     logging.info(f"Начинаю рассылку для {len(subscribers)} подписчиков.")
     
-    # Проверяем сигналы один раз
     try:
         signal_data_5m = generate_signal_and_plot()
         signal_data_30m = generate_signal_and_plot_30m()
@@ -364,7 +341,6 @@ async def check_and_send_to_subscribers():
         logging.error(f"Критическая ошибка при генерации сигналов: {e}")
         return
 
-    # Рассылаем, если они есть
     for sub_id in subscribers:
         if signal_data_5m and signal_data_5m[0]:
             await send_signal_to_chat(sub_id, signal_data_5m)
@@ -378,113 +354,6 @@ def index():
     """Стартовая страница для проверки, что сервис жив."""
     return "Telegram Bot is running!"
 
-async def backtest(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Запускает бэктест по команде с фиксированным порогом 0.55."""
-    threshold = 0.55
-    await update.message.reply_text('Запускаю бэктест с котировками Yahoo...')
-    
-    try:
-        stats, plot_filename = run_backtest(threshold)
-        if plot_filename:
-            await update.message.reply_document(
-                document=open(plot_filename, 'rb'),
-                caption=f"📈 **Результаты бэктеста (Yahoo)**\n\n{format_stats_for_telegram(stats)}"
-            )
-        else:
-            await update.message.reply_text("Не удалось сгенерировать отчет.")
-    except Exception as e:
-        logger.error(f"Ошибка при выполнении бэктеста: {e}")
-        await update.message.reply_text(f"Произошла ошибка при выполнении бэктеста: {e}")
-
-async def backtest_local(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Запускает локальный бэктест по команде."""
-    try:
-        threshold_str = context.args[0]
-        threshold = float(threshold_str)
-        if not (0 <= threshold <= 1):
-            raise ValueError("Порог должен быть между 0 и 1.")
-    except (IndexError, ValueError):
-        await update.message.reply_text('Пожалуйста, укажите порог для бэктеста, например: /backtest_local 0.55')
-        return
-
-    chat_id = update.message.chat.id
-    
-    loop = get_background_loop()
-    task = asyncio.run_coroutine_threadsafe(run_backtest_local_async(chat_id, threshold), loop)
-    background_tasks.add(task)
-    task.add_done_callback(background_tasks.discard)
-
-async def run_backtest_local_async(chat_id, threshold):
-    """Асинхронно запускает локальный бэктест."""
-    logging.info(f"Запуск локального бэктеста для {chat_id} с порогом {threshold}.")
-    await bot.send_message(chat_id, f"✅ Запускаю локальный бэктест с фильтром {threshold}. Это может занять несколько минут...")
-    
-    try:
-        # Запускаем в отдельном потоке, чтобы не блокировать бота
-        stats, plot_file = await asyncio.to_thread(
-            run_backtest_local, 
-            'EURUSD_Candlestick_30_m_BID_18.06.2022-18.06.2025 (2).csv', 
-            'DOLLAR.IDXUSD_Candlestick_30_m_BID_18.06.2022-18.06.2025 (2).csv',
-            threshold
-        )
-        
-        if plot_file and os.path.exists(plot_file):
-            await bot.send_message(chat_id, f"📊 Результаты бэктеста:\n\n<pre>{stats}</pre>", parse_mode='HTML')
-            with open(plot_file, 'rb') as f:
-                await bot.send_document(chat_id, document=f, caption=f"Подробный отчет по локальному бэктесту с фильтром {threshold}")
-            os.remove(plot_file)
-        else:
-            await bot.send_message(chat_id, f"❌ Ошибка во время локального бэктеста: {stats}")
-            
-    except Exception as e:
-        logging.error(f"Критическая ошибка в задаче локального бэктеста: {e}")
-        await bot.send_message(chat_id, f"❌ Критическая ошибка: {e}")
-
-async def fullbacktest(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Запускает полный бэктест на заданных файлах."""
-    chat_id = update.message.chat.id
-    loop = get_background_loop()
-    task = asyncio.run_coroutine_threadsafe(run_fullbacktest_async(chat_id), loop)
-    background_tasks.add(task)
-    task.add_done_callback(background_tasks.discard)
-
-async def run_fullbacktest_async(chat_id):
-    """Асинхронно запускает полный бэктест."""
-    threshold = 0.55
-    eurusd_file = 'EURUSD_Candlestick_30_m_BID_18.06.2022-18.06.2025 (2).csv'
-    dxy_file = 'DOLLAR.IDXUSD_Candlestick_30_m_BID_18.06.2022-18.06.2025 (2).csv'
-
-    logging.info(f"Запуск полного бэктеста для {chat_id} с порогом {threshold}.")
-    await bot.send_message(chat_id, f"✅ Запускаю полный бэктест с фильтром {threshold}. Это может занять несколько минут...")
-    
-    try:
-        # Проверка наличия файлов
-        if not os.path.exists(eurusd_file) or not os.path.exists(dxy_file):
-            await bot.send_message(chat_id, f"❌ Ошибка: Не найдены файлы для бэктеста. Убедитесь, что `{eurusd_file}` и `{dxy_file}` находятся в директории проекта.")
-            return
-
-        # Запускаем в отдельном потоке, чтобы не блокировать бота
-        stats, plot_file = await asyncio.to_thread(
-            run_backtest_local, 
-            eurusd_file, 
-            dxy_file,
-            threshold
-        )
-        
-        if plot_file and os.path.exists(plot_file):
-            stats_text = format_stats_for_telegram(stats)
-            await bot.send_message(chat_id, f"📊 Результаты полного бэктеста:\n\n{stats_text}", parse_mode='Markdown')
-            
-            with open(plot_file, 'rb') as f:
-                await bot.send_document(chat_id, document=f, caption=f"Подробный отчет по полному бэктесту с фильтром {threshold}")
-            os.remove(plot_file)
-        else:
-            await bot.send_message(chat_id, f"❌ Ошибка во время полного бэктеста: {stats}")
-            
-    except Exception as e:
-        logging.error(f"Критическая ошибка в задаче полного бэктеста: {e}")
-        await bot.send_message(chat_id, f"❌ Критическая ошибка: {e}")
-
 # --- 6. Запуск ---
 
 # Регистрируем все обработчики команд
@@ -495,8 +364,3 @@ application.add_handler(CommandHandler("check", check))
 application.add_handler(CommandHandler("backtest", backtest))
 application.add_handler(CommandHandler("backtest_local", backtest_local))
 application.add_handler(CommandHandler("fullbacktest", fullbacktest))
-
-if __name__ == "__main__":
-    # Локальный запуск для отладки в режиме опроса
-    logging.info("Запуск бота в режиме опроса для локальной отладки...")
-    application.run_polling() 
