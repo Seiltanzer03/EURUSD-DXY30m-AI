@@ -6,7 +6,7 @@ import joblib
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-# import mplfinance as mpf
+import mplfinance as mpf
 import warnings
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import classification_report
@@ -131,37 +131,45 @@ def load_data(period="2d", interval="5m"):
     return data
 
 def create_signal_plot(candles_df, entry, sl, tp, title, filename):
-    """Создает и сохраняет простой график сигнала с помощью Matplotlib."""
+    """Создает и сохраняет свечной график сигнала с помощью mplfinance в PNG."""
     try:
-        plt.style.use('dark_background')
-        fig, ax = plt.subplots(figsize=(12, 7), dpi=100)
+        # Убедимся, что данные содержат нужные столбцы
+        required_columns = ['Open', 'High', 'Low', 'Close']
+        if not all(col in candles_df.columns for col in required_columns):
+            raise ValueError(f"Отсутствуют необходимые столбцы OHLC в данных для графика.")
 
-        # График цены Close
-        ax.plot(candles_df.index, candles_df['Close'], label='EURUSD Close', color='cyan', linewidth=1.5)
+        # Создаем линии для уровней
+        hlines = dict(hlines=[entry, sl, tp], colors=['b', 'r', 'g'], linestyle='--')
 
-        # Уровни
-        ax.axhline(y=entry, color='blue', linestyle='--', linewidth=1, label=f'Entry: {entry:.5f}')
-        ax.axhline(y=sl, color='red', linestyle='--', linewidth=1, label=f'SL: {sl:.5f}')
-        ax.axhline(y=tp, color='lime', linestyle='--', linewidth=1, label=f'TP: {tp:.5f}')
-
-        # Точка входа
-        ax.plot(candles_df.index[-1], entry, 'v', color='blue', markersize=10, label='Sell Entry Point')
-
-        # Настройки
-        ax.set_title(title, fontsize=16)
-        ax.set_ylabel('Price')
-        ax.grid(True, linestyle=':', alpha=0.3)
-        ax.legend(loc='upper left')
+        # Настраиваем стиль
+        mc = mpf.make_marketcolors(
+            up='#26a69a', down='#ef5350',
+            edge='inherit',
+            wick={'up':'#26a69a', 'down':'#ef5350'},
+            volume='inherit'
+        )
+        s = mpf.make_mpf_style(
+            base_mpf_style='nightclouds',
+            marketcolors=mc,
+            gridstyle=':',
+            gridcolor='gray'
+        )
         
-        # Форматирование дат
-        fig.autofmt_xdate()
-
-        plt.savefig(filename, bbox_inches='tight')
-        plt.close(fig)
-        print(f"График успешно сохранен в {filename}")
+        # Строим и сохраняем график
+        mpf.plot(
+            candles_df,
+            type='candle',
+            style=s,
+            title=title,
+            ylabel='Price',
+            hlines=hlines,
+            figsize=(15, 8),
+            savefig=dict(fname=filename, dpi=150, bbox_inches='tight')
+        )
+        print(f"Свечной график успешно сохранен в {filename}")
         return filename
     except Exception as e:
-        print(f"Ошибка при создании графика Matplotlib: {e}")
+        print(f"Ошибка при создании графика mplfinance: {e}")
         return None
 
 def generate_signal_and_plot():
