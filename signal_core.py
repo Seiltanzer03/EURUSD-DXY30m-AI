@@ -144,7 +144,7 @@ def create_signal_plot(candles_df, entry_time, entry_price, sl, tp, title, filen
             entry_marker[entry_idx] = entry_price * 0.998 # Располагаем маркер чуть ниже цены для наглядности
         
         addplot = [
-            mpf.make_addplot(entry_marker, type='scatter', color='#00BFFF', marker='^', s=150, label='Entry Point')
+            mpf.make_addplot(entry_marker, type='scatter', color='#00BFFF', marker='^', markersize=150, label='Entry Point')
         ]
 
         # Настраиваем стиль
