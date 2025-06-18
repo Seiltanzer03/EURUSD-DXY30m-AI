@@ -226,53 +226,42 @@ def parse_signal_output(output):
     message = '\n'.join(message_lines)
     return message, image_path
 
-async def handle_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Асинхронно обрабатывает входящие сообщения от пользователя."""
-    if not update.message or not update.message.text:
-        return
+# --- 4. Обработчики команд ---
 
-    chat_id = update.message.chat.id
-    text = update.message.text
-    logging.info(f"Получено сообщение от {chat_id}: {text}")
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Отправляет приветственное сообщение."""
+    await update.message.reply_text(
+        "Добро пожаловать! Бот присылает сигналы по стратегиям M5 (SMC) и M30 (SMC+AI).\n\n"
+        "Команды:\n"
+        "/subscribe - Подписаться на сигналы\n"
+        "/unsubscribe - Отписаться\n"
+        "/check - Проверить сигналы прямо сейчас\n"
+        "/backtest - Бэктест M30 на данных Yahoo\n"
+        "/backtest_local 0.55 - Локальный бэктест M30\n"
+        "/fullbacktest - Полный бэктест на локальных файлах за 3 года"
+    )
 
-    command = text.split()[0]
-
-    if command == '/start':
-        await update.message.reply_text(
-            "Добро пожаловать! Бот присылает сигналы по стратегиям M5 (SMC) и M30 (SMC+AI).\n\n"
-            "Команды:\n"
-            "/subscribe - Подписаться на сигналы\n"
-            "/unsubscribe - Отписаться\n"
-            "/check - Проверить сигналы прямо сейчас\n"
-            "/backtest - Бэктест M30 на данных Yahoo\n"
-            "/backtest_local 0.55 - Локальный бэктест M30\n"
-            "/fullbacktest - Полный бэктест на локальных файлах за 3 года"
-        )
-    elif command == '/subscribe':
-        if add_subscriber(chat_id):
-            await update.message.reply_text("Вы успешно подписались на сигналы!")
-        else:
-            await update.message.reply_text("Вы уже подписаны.")
-    elif command == '/unsubscribe':
-        if remove_subscriber(chat_id):
-            await update.message.reply_text("Вы успешно отписались.")
-        else:
-            await update.message.reply_text("Вы не были подписаны.")
-    elif command == '/check':
-        await update.message.reply_text("Проверяю сигналы на M5 и M30...")
-        # Запускаем проверку и отправку в фоновом режиме
-        loop = get_background_loop()
-        task = asyncio.run_coroutine_threadsafe(check_and_send_signals_to_chat(chat_id), loop)
-        background_tasks.add(task)
-        task.add_done_callback(background_tasks.discard)
-    elif command == '/backtest':
-        await backtest(update, context) # Используем новую функцию-обработчик
-    elif command == '/backtest_local':
-        await backtest_local(update, context) # Используем новую функцию-обработчик
-    elif command == '/fullbacktest':
-        await fullbacktest(update, context)
+async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Подписывает пользователя на рассылку."""
+    if add_subscriber(update.message.chat_id):
+        await update.message.reply_text("Вы успешно подписались на сигналы!")
     else:
-        await update.message.reply_text(f"Команда '{text}' не распознана.")
+        await update.message.reply_text("Вы уже подписаны.")
+
+async def unsubscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Отписывает пользователя от рассылки."""
+    if remove_subscriber(update.message.chat_id):
+        await update.message.reply_text("Вы успешно отписались.")
+    else:
+        await update.message.reply_text("Вы не были подписаны.")
+
+async def check(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Запускает проверку сигналов по запросу пользователя."""
+    await update.message.reply_text("Проверяю сигналы на M5 и M30...")
+    loop = get_background_loop()
+    task = asyncio.run_coroutine_threadsafe(check_and_send_signals_to_chat(update.message.chat_id), loop)
+    background_tasks.add(task)
+    task.add_done_callback(background_tasks.discard)
 
 async def send_signal_to_chat(chat_id, signal_data):
     """Отправляет один сформатированный сигнал в указанный чат."""
@@ -321,23 +310,25 @@ async def check_and_send_signals_to_chat(chat_id):
         logging.error(f"Ошибка при проверке и отправке сигналов: {e}")
         await bot.send_message(chat_id, f"Произошла ошибка: {e}")
 
-# --- 4. Веб-сервер и Роуты ---
+# --- 5. Веб-сервер и Роуты ---
+
+# Создаем экземпляр приложения PTB глобально
+application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    """Обрабатывает вебхуки от Telegram, отправляя задачу в фоновый event loop."""
+    """Обрабатывает вебхуки от Telegram, используя PTB Application."""
     try:
         update_data = request.get_json(force=True)
         logging.info(f"Webhook received: {update_data}")
         update = telegram.Update.de_json(update_data, bot)
         
-        # Получаем (или создаем) фоновый цикл
         loop = get_background_loop()
+        # Используем встроенный обработчик, который сам вызовет нужную команду с (update, context)
+        asyncio.run_coroutine_threadsafe(application.process_update(update), loop)
+        logging.info("application.process_update task scheduled successfully.")
         
-        # Отправляем coroutine на выполнение в фоновый поток (fire-and-forget)
-        asyncio.run_coroutine_threadsafe(handle_update(update), loop)
-        logging.info("handle_update task scheduled successfully.")
-        
-    except Exception:
+    except Exception as e:
         logging.error("An error occurred in the webhook handler.", exc_info=True)
     
     return 'ok'
@@ -494,28 +485,18 @@ async def run_fullbacktest_async(chat_id):
         logging.error(f"Критическая ошибка в задаче полного бэктеста: {e}")
         await bot.send_message(chat_id, f"❌ Критическая ошибка: {e}")
 
+# --- 6. Запуск ---
+
+# Регистрируем все обработчики команд
+application.add_handler(CommandHandler("start", start))
+application.add_handler(CommandHandler("subscribe", subscribe))
+application.add_handler(CommandHandler("unsubscribe", unsubscribe))
+application.add_handler(CommandHandler("check", check))
+application.add_handler(CommandHandler("backtest", backtest))
+application.add_handler(CommandHandler("backtest_local", backtest_local))
+application.add_handler(CommandHandler("fullbacktest", fullbacktest))
+
 if __name__ == "__main__":
-    # Локальный запуск для отладки
+    # Локальный запуск для отладки в режиме опроса
     logging.info("Запуск бота в режиме опроса для локальной отладки...")
-    
-    # Загружаем модель один раз при старте
-    try:
-        model = joblib.load(MODEL_FILE)
-        logging.info("ML модель успешно загружена.")
-    except Exception as e:
-        logging.error(f"Не удалось загрузить ML модель: {e}")
-        model = None
-
-    application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-
-    # Добавляем обработчики команд
-    application.add_handler(CommandHandler("start", handle_update))
-    application.add_handler(CommandHandler("subscribe", handle_update))
-    application.add_handler(CommandHandler("unsubscribe", handle_update))
-    application.add_handler(CommandHandler("check", handle_update))
-    application.add_handler(CommandHandler("backtest", backtest))
-    application.add_handler(CommandHandler("backtest_local", backtest_local))
-    application.add_handler(CommandHandler("fullbacktest", fullbacktest))
-    
-    # Запуск бота
     application.run_polling() 
