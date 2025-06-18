@@ -13,4 +13,3 @@ gunicorn
 matplotlib==3.8.4
 mplfinance==0.12.10b0
 supabase>=2.4.0,<3.0.0
-weasyprint
