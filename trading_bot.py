@@ -422,14 +422,29 @@ async def backtest_m5(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 try:
                     signal_time = signal_info['time']
                     entry_price = signal_info['entry']
+                    # Определяем SL и TP для этого конкретного сигнала
                     sl_price = entry_price * (1 + SL_RATIO)
                     tp_price = entry_price * (1 - TP_RATIO)
                     
                     # Находим индекс сигнала, чтобы взять срез данных для графика
-                    signal_index = data.index.get_loc(signal_time)
-                    plot_data = data.iloc[max(0, signal_index - 59) : signal_index + 1]
+                    # Используем get_indexer для большей надежности
+                    signal_index = data.index.get_indexer([signal_time], method='nearest')[0]
+                    
+                    plot_data_start = max(0, signal_index - 60)
+                    # Чтобы захватить развитие после сигнала, берем еще 100 свечей вперед
+                    plot_data_end = min(len(data), signal_index + 100)
+                    plot_data = data.iloc[plot_data_start:plot_data_end]
 
-                    plot_title = f"M5 Signal at {signal_time.strftime('%Y-%m-%d %H:%M UTC')}"
+                    # Определяем результат сделки для заголовка
+                    result = "Unknown"
+                    low_after_signal = plot_data[plot_data.index > signal_time]['Low'].min()
+                    high_after_signal = plot_data[plot_data.index > signal_time]['High'].max()
+                    if pd.notna(low_after_signal) and low_after_signal <= tp_price:
+                        result = "TP"
+                    elif pd.notna(high_after_signal) and high_after_signal >= sl_price:
+                        result = "SL"
+
+                    plot_title = f"M5 Trade at {signal_time.strftime('%Y-%m-%d %H:%M')}, Result: {result}"
                     plot_filename = f"m5_signal_{i}_{chat_id}.png"
                     
                     # Генерируем график в потоке
