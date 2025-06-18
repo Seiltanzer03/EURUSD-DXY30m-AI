@@ -10,6 +10,7 @@ import requests
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 import weasyprint
+from signal_core import MODEL_FILE
 
 def flatten_multiindex_columns(df):
     """
@@ -117,7 +118,7 @@ def run_backtest(threshold=0.55):
         eurusd_data = load_data_from_yfinance('EURUSD=X')
         dxy_data = load_data_from_yfinance('DX-Y.NYB')
     except Exception as e:
-        return f"Ошибка загрузки данных: {e}", None
+        return f"Ошибка загрузки данных: {e}", None, None
 
     # 2. Подготовка данных
     eurusd_data.ta.rsi(length=14, append=True)
@@ -131,7 +132,7 @@ def run_backtest(threshold=0.55):
 
     # 3. Загрузка модели
     if not os.path.exists(MODEL_FILE):
-        return f"Файл модели не найден: {MODEL_FILE}", None
+        return f"Файл модели не найден: {MODEL_FILE}", None, None
     model = joblib.load(MODEL_FILE)
 
     # 4. Запуск бэктеста
@@ -151,11 +152,11 @@ def run_backtest(threshold=0.55):
         weasyprint.HTML(html_filename).write_pdf(pdf_filename)
         print("Конвертация завершена.")
         os.remove(html_filename) # Удаляем временный HTML
-        return stats, pdf_filename
+        return stats, data, pdf_filename
     except Exception as e:
         print(f"Ошибка при конвертации HTML в PDF: {e}")
         # Если не вышло, возвращаем хотя бы HTML
-        return stats, html_filename
+        return stats, data, html_filename
 
 def run_backtest_local(eurusd_file, dxy_file, threshold):
     """Запускает бэктест на локальных CSV-файлах."""
@@ -165,11 +166,11 @@ def run_backtest_local(eurusd_file, dxy_file, threshold):
         # 1. Загрузка и подготовка данных
         data = generate_features_for_backtest(eurusd_file, dxy_file)
     except Exception as e:
-        return f"Ошибка подготовки данных: {e}", None
+        return f"Ошибка подготовки данных: {e}", None, None
 
     # 2. Загрузка модели
     if not os.path.exists(MODEL_FILE):
-        return f"Файл модели не найден: {MODEL_FILE}", None
+        return f"Файл модели не найден: {MODEL_FILE}", None, None
     model = joblib.load(MODEL_FILE)
 
     # 3. Запуск бэктеста
@@ -180,7 +181,7 @@ def run_backtest_local(eurusd_file, dxy_file, threshold):
     try:
         stats = bt.run()
     except Exception as e:
-        return f"Ошибка во время выполнения бэктеста: {e}", None
+        return f"Ошибка во время выполнения бэктеста: {e}", None, None
         
     # 4. Сохранение результатов в виде PDF
     html_filename = f"backtest_local_report_{threshold}_{int(time.time())}.html"
@@ -192,10 +193,10 @@ def run_backtest_local(eurusd_file, dxy_file, threshold):
         weasyprint.HTML(html_filename).write_pdf(pdf_filename)
         print("Конвертация завершена.")
         os.remove(html_filename)
-        return stats, pdf_filename
+        return stats, data, pdf_filename
     except Exception as e:
         print(f"Ошибка при конвертации HTML в PDF: {e}")
-        return stats, html_filename
+        return stats, data, html_filename
 
 def generate_features_for_backtest(eurusd_csv, dxy_csv):
     """Общая функция для загрузки и подготовки данных для бэктестов."""
