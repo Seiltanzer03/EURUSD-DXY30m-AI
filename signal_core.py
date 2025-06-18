@@ -142,7 +142,7 @@ def create_signal_plot(candles_df, entry, sl, tp, title, filename):
         entry_point[-1] = entry * 0.998 # Располагаем маркер чуть ниже цены входа для наглядности
         
         apds = [
-            mpf.make_addplot(entry_point, type='scatter', marker='v', color='cyan', s=100)
+            mpf.make_addplot(entry_point, type='scatter', marker='v', color='cyan', markersize=100)
         ]
 
         # Создаем и сохраняем график
