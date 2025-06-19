@@ -32,15 +32,15 @@ s = mpf.make_mpf_style(
     facecolor='white'
 )
 
-MODEL_FILE = 'ml_model_final_fix.joblib'
-PREDICTION_THRESHOLD = 0.55
-LOOKBACK_PERIOD = 20
-TIMEFRAME = '5m'
-SL_RATIO = 0.002
-TP_RATIO = 0.005
-
-# Для 30-минутного ТФ
-LOOKBACK_PERIOD_30M = 34 # 17 часов / 30 мин
+# --- Константы для таймфреймов и параметров ---
+TIMEFRAME_5M = '5m'
+TIMEFRAME_30M = '30m'
+LOOKBACK_PERIOD_5M = 20
+LOOKBACK_PERIOD_30M = 34  # ~17 часов
+SL_RATIO_5M = 0.002
+TP_RATIO_5M = 0.005
+SL_RATIO_30M = 0.004
+TP_RATIO_30M = 0.01
 
 def flatten_multiindex_columns(df):
     if isinstance(df.columns, pd.MultiIndex):
