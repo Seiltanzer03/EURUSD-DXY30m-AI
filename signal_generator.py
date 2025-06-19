@@ -16,7 +16,7 @@ else:
     ssl._create_default_https_context = _create_unverified_https_context
 
 MODEL_FILE = 'ml_model_final_fix.joblib'
-PREDICTION_THRESHOLD = 0.1
+PREDICTION_THRESHOLD = 0.55
 LOOKBACK_PERIOD = 20
 SL_RATIO = 0.004
 TP_RATIO = 0.01
