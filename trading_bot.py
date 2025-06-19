@@ -312,48 +312,19 @@ async def handle_update(update):
                 await bot.send_message(chat_id, "Неверный формат. Используйте: /fullbacktest [уровень_фильтра], например: /fullbacktest 0.55")
         elif text == '/check':
             try:
-                # 5-минутный таймфрейм
-                signal_5m, entry_5m, sl_5m, tp_5m, last_5m, image_path_5m = generate_signal_and_plot()
-                if signal_5m:
-                    message_5m = (
-                        f"🚨 СИГНАЛ (M5) 🚨\n"
-                        f"SELL EURUSD\n"
-                        f"Time: {last_5m.name.strftime('%Y-%m-%d %H:%M:%S UTC')}\n"
-                        f"Entry: {entry_5m:.5f}\n"
-                        f"SL: {sl_5m:.5f}\n"
-                        f"TP: {tp_5m:.5f}"
-                    )
-                    if image_path_5m and os.path.exists(image_path_5m):
-                        with open(image_path_5m, 'rb') as img:
-                            await bot.send_photo(chat_id, photo=img, caption=message_5m)
-                    else:
-                        await bot.send_message(chat_id, message_5m)
-                else:
-                    message_5m = f"Нет сигнала на M5. Время: {last_5m.name.strftime('%Y-%m-%d %H:%M:%S UTC') if last_5m is not None else 'N/A'}"
-                    await bot.send_message(chat_id, message_5m)
-
-                # 30-минутный таймфрейм
-                signal_30m, entry_30m, sl_30m, tp_30m, last_30m, image_path_30m = generate_signal_and_plot_30m()
-                if signal_30m:
-                    message_30m = (
-                        f"🚨 СИГНАЛ (M30) 🚨\n"
-                        f"SELL EURUSD\n"
-                        f"Time: {last_30m.name.strftime('%Y-%m-%d %H:%M:%S UTC')}\n"
-                        f"Entry: {entry_30m:.5f}\n"
-                        f"SL: {sl_30m:.5f}\n"
-                        f"TP: {tp_30m:.5f}"
-                    )
-                    if image_path_30m and os.path.exists(image_path_30m):
-                        with open(image_path_30m, 'rb') as img:
-                            await bot.send_photo(chat_id, photo=img, caption=message_30m)
-                    else:
-                        await bot.send_message(chat_id, message_30m)
-                else:
-                    message_30m = f"Нет сигнала на M30. Время: {last_30m.name.strftime('%Y-%m-%d %H:%M:%S UTC') if last_30m is not None else 'N/A'}"
-                    await bot.send_message(chat_id, message_30m)
+                # Запускаем генерацию сигналов в фоновом потоке, чтобы не блокировать ответ
+                loop = get_background_loop()
+                task = asyncio.run_coroutine_threadsafe(
+                    generate_and_send_signals(),
+                    loop
+                )
+                # Ждем завершения, если нужно для отладки, но обычно это не требуется
+                # task.result() 
+                return "Check initiated", 200
 
             except Exception as e:
-                await bot.send_message(chat_id, f"Ошибка при генерации сигнала: {e}")
+                logging.error(f"Критическая ошибка в check_route: {e}", exc_info=True)
+                return "Error", 500
         else:
             logging.info(f"Command '{text}' not recognized by any handler.")
 
@@ -383,82 +354,97 @@ def webhook():
 
 @app.route('/check', methods=['GET'])
 def check_route():
-    """Эндпоинт для проверки сигнала по расписанию (UptimeRobot)."""
+    """
+    Эндпоинт для внешних сервисов (например, UptimeRobot), 
+    чтобы запускать проверку сигналов каждые 5 минут.
+    """
     print("Получен запрос на /check от планировщика.")
     try:
-        # Получаем оба сигнала
-        signal_5m, entry_5m, sl_5m, tp_5m, last_5m, image_path_5m = generate_signal_and_plot()
-        
-        signal_30m, entry_30m, sl_30m, tp_30m, last_30m, image_path_30m = generate_signal_and_plot_30m()
-
-        # Создаем асинхронную задачу для отправки
+        # Запускаем генерацию сигналов в фоновом потоке, чтобы не блокировать ответ
         loop = get_background_loop()
         task = asyncio.run_coroutine_threadsafe(
-            send_signals(signal_5m, entry_5m, sl_5m, tp_5m, last_5m, image_path_5m,
-                         signal_30m, entry_30m, sl_30m, tp_30m, last_30m, image_path_30m), 
+            generate_and_send_signals(),
             loop
         )
-        background_tasks.add(task)
-        task.add_done_callback(background_tasks.discard)
+        # Ждем завершения, если нужно для отладки, но обычно это не требуется
+        # task.result() 
+        return "Check initiated", 200
 
-        return "Проверка инициирована.", 200
     except Exception as e:
-        print(f"Ошибка при генерации сигнала: {e}")
-        # Можно отправить уведомление администратору об ошибке
-        # asyncio.run(bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=f"Ошибка в /check: {e}"))
-        return f"Ошибка: {e}", 500
+        logging.error(f"Критическая ошибка в check_route: {e}", exc_info=True)
+        return "Error", 500
 
-async def send_signals(signal_5m, entry_5m, sl_5m, tp_5m, last_5m, image_path_5m,
-                       signal_30m, entry_30m, sl_30m, tp_30m, last_30m, image_path_30m):
+async def generate_and_send_signals():
+    """Генерирует и отправляет все типы сигналов."""
+    try:
+        # 5-минутный таймфрейм
+        signal_5m, entry_5m, sl_5m, tp_5m, last_5m, image_path_5m, timeframe_5m = generate_signal_and_plot()
+        
+        # 30-минутный таймфрейм
+        signal_30m, entry_30m, sl_30m, tp_30m, last_30m, image_path_30m, timeframe_30m = generate_signal_and_plot_30m()
+
+        # Если есть хотя бы один сигнал, отправляем
+        if signal_5m or signal_30m:
+            await send_signals(
+                signal_5m, entry_5m, sl_5m, tp_5m, last_5m, image_path_5m, timeframe_5m,
+                signal_30m, entry_30m, sl_30m, tp_30m, last_30m, image_path_30m, timeframe_30m
+            )
+    except Exception as e:
+        logging.error(f"Ошибка при генерации и отправке сигналов: {e}", exc_info=True)
+
+async def send_signals(signal_5m, entry_5m, sl_5m, tp_5m, last_5m, image_path_5m, timeframe_5m,
+                       signal_30m, entry_30m, sl_30m, tp_30m, last_30m, image_path_30m, timeframe_30m):
     """Асинхронно рассылает сигналы подписчикам."""
     subscribers = get_subscribers()
     if not subscribers:
-        print("Нет подписчиков для рассылки.")
+        logging.info("Сигнал(ы) есть, но подписчиков нет.")
         return
 
-    for sub_id in subscribers:
-        # Рассылка сигнала M5
-        if signal_5m:
-            message_5m = (
-                f"🚨 СИГНАЛ (M5) 🚨\n"
-                f"SELL EURUSD\n"
-                f"Time: {last_5m.name.strftime('%Y-%m-%d %H:%M:%S UTC')}\n"
-                f"Entry: {entry_5m:.5f}\n"
-                f"SL: {sl_5m:.5f}\n"
-                f"TP: {tp_5m:.5f}"
-            )
-            try:
-                if image_path_5m and os.path.exists(image_path_5m):
-                    with open(image_path_5m, 'rb') as img:
-                        await bot.send_photo(sub_id, photo=img, caption=message_5m)
-                else:
-                    await bot.send_message(sub_id, message_5m)  # Отправка без картинки если что-то не так
-            except Exception as e:
-                logging.error(f"Не удалось отправить M5 сигнал подписчику {sub_id}: {e}")
+    message_parts = []
+    images_to_send = []
 
-        # Рассылка сигнала M30
-        if signal_30m:
-            message_30m = (
-                f"🚨 СИГНАЛ (M30) 🚨\n"
-                f"SELL EURUSD\n"
-                f"Time: {last_30m.name.strftime('%Y-%m-%d %H:%M:%S UTC')}\n"
-                f"Entry: {entry_30m:.5f}\n"
-                f"SL: {sl_30m:.5f}\n"
-                f"TP: {tp_30m:.5f}"
-            )
-            try:
-                if image_path_30m and os.path.exists(image_path_30m):
-                    with open(image_path_30m, 'rb') as img:
-                        await bot.send_photo(sub_id, photo=img, caption=message_30m)
-                else:
-                    await bot.send_message(sub_id, message_30m)  # Отправка без картинки если что-то не так
-            except Exception as e:
-                logging.error(f"Не удалось отправить M30 сигнал подписчику {sub_id}: {e}")
+    if signal_5m:
+        message_5m = (
+            f"🚨 СИГНАЛ НА ПРОДАЖУ (SELL) EUR/USD ({timeframe_5m}) 🚨\n\n"
+            f"Время сетапа (UTC): `{last_5m.name.strftime('%Y-%m-%d %H:%M')}`\n"
+            f"Вход: {entry_5m:.5f}\n"
+            f"Стоп: {sl_5m:.5f}\n"
+            f"Тейк: {tp_5m:.5f}"
+        )
+        message_parts.append(message_5m)
+        if image_path_5m and os.path.exists(image_path_5m):
+            images_to_send.append(image_path_5m)
+
+    if signal_30m:
+        message_30m = (
+            f"🚨 СИГНАЛ НА ПРОДАЖУ (SELL) EUR/USD ({timeframe_30m}) 🚨\n\n"
+            f"Время сетапа (UTC): `{last_30m.name.strftime('%Y-%m-%d %H:%M')}`\n"
+            f"Вход: {entry_30m:.5f}\n"
+            f"Стоп: {sl_30m:.5f}\n"
+            f"Тейк: {tp_30m:.5f}"
+        )
+        message_parts.append(message_30m)
+        if image_path_30m and os.path.exists(image_path_30m):
+            images_to_send.append(image_path_30m)
+
+    if not message_parts:
+        return
+
+    final_message = "\n\n---\n\n".join(message_parts)
+
+    for chat_id in subscribers:
+        try:
+            await bot.send_message(chat_id, final_message, parse_mode='Markdown')
+            for img_path in images_to_send:
+                with open(img_path, 'rb') as f:
+                    await bot.send_photo(chat_id, photo=f)
+                os.remove(img_path) # Удаляем после отправки
+        except Exception as e:
+            logging.error(f"Не удалось отправить сигнал подписчику {chat_id}: {e}")
 
 @app.route('/')
 def index():
-    """Стартовая страница для проверки, что сервис жив."""
-    return "Telegram Bot is running!"
+    return "Trading Bot is running."
 
 if __name__ == "__main__":
     # Локальный запуск для отладки. На Render будет использоваться gunicorn.
