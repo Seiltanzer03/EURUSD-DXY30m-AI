@@ -35,10 +35,10 @@ s = mpf.make_mpf_style(
 # --- Константы для таймфреймов и параметров ---
 TIMEFRAME_5M = '5m'
 TIMEFRAME_30M = '30m'
-LOOKBACK_PERIOD_5M = 20
+LOOKBACK_PERIOD_5M = 5
 LOOKBACK_PERIOD_30M = 34  # ~17 часов
-SL_RATIO_5M = 0.002
-TP_RATIO_5M = 0.005
+SL_RATIO_5M = 0.003
+TP_RATIO_5M = 0.008
 SL_RATIO_30M = 0.004
 TP_RATIO_30M = 0.01
 
