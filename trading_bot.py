@@ -12,7 +12,7 @@ import threading
 import logging
 import subprocess
 import re
-from signal_core import generate_signal_and_plot, generate_signal_and_plot_30m, TIMEFRAME
+from signal_core import generate_signal_and_plot, generate_signal_and_plot_30m
 
 # --- 1. Конфигурация и Инициализация ---
 
@@ -313,7 +313,7 @@ async def handle_update(update):
         elif text == '/check':
             try:
                 # 5-минутный таймфрейм
-                signal_5m, entry_5m, sl_5m, tp_5m, last_5m, image_path_5m, timeframe_5m = generate_signal_and_plot()
+                signal_5m, entry_5m, sl_5m, tp_5m, last_5m, image_path_5m = generate_signal_and_plot()
                 if signal_5m:
                     message_5m = (
                         f"🚨 СИГНАЛ (M5) 🚨\n"
@@ -333,7 +333,7 @@ async def handle_update(update):
                     await bot.send_message(chat_id, message_5m)
 
                 # 30-минутный таймфрейм
-                signal_30m, entry_30m, sl_30m, tp_30m, last_30m, image_path_30m, tf_30m = generate_signal_and_plot_30m()
+                signal_30m, entry_30m, sl_30m, tp_30m, last_30m, image_path_30m = generate_signal_and_plot_30m()
                 if signal_30m:
                     message_30m = (
                         f"🚨 СИГНАЛ (M30) 🚨\n"
@@ -387,15 +387,15 @@ def check_route():
     print("Получен запрос на /check от планировщика.")
     try:
         # Получаем оба сигнала
-        signal_5m, entry_5m, sl_5m, tp_5m, last_5m, image_path_5m, timeframe_5m = generate_signal_and_plot()
+        signal_5m, entry_5m, sl_5m, tp_5m, last_5m, image_path_5m = generate_signal_and_plot()
         
-        signal_30m, entry_30m, sl_30m, tp_30m, last_30m, image_path_30m, tf_30m = generate_signal_and_plot_30m()
+        signal_30m, entry_30m, sl_30m, tp_30m, last_30m, image_path_30m = generate_signal_and_plot_30m()
 
         # Создаем асинхронную задачу для отправки
         loop = get_background_loop()
         task = asyncio.run_coroutine_threadsafe(
             send_signals(signal_5m, entry_5m, sl_5m, tp_5m, last_5m, image_path_5m,
-                         signal_30m, entry_30m, sl_30m, tp_30m, last_30m, image_path_30m, tf_30m), 
+                         signal_30m, entry_30m, sl_30m, tp_30m, last_30m, image_path_30m), 
             loop
         )
         background_tasks.add(task)
@@ -409,7 +409,7 @@ def check_route():
         return f"Ошибка: {e}", 500
 
 async def send_signals(signal_5m, entry_5m, sl_5m, tp_5m, last_5m, image_path_5m,
-                       signal_30m, entry_30m, sl_30m, tp_30m, last_30m, image_path_30m, timeframe_30m):
+                       signal_30m, entry_30m, sl_30m, tp_30m, last_30m, image_path_30m):
     """Асинхронно рассылает сигналы подписчикам."""
     subscribers = get_subscribers()
     if not subscribers:
