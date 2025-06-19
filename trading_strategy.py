@@ -88,9 +88,52 @@ class SMCStrategy(Strategy):
                         pass # Игнорируем ошибки исполнения
             self.signal_to_trade = 0
 
+class SMCStrategy5m(Strategy):
+    """Стратегия для 5-минутного таймфрейма на основе паттерна."""
+    lookback_period = 20
+    sl_ratio = 0.002  # Уменьшенный SL
+    tp_ratio = 0.005  # Уменьшенный TP
+    risk_percent = 0.01
+    
+    def init(self):
+        self.signal_to_trade = 0
+
+    def next(self):
+        if self.position:
+            return
+
+        current_index = len(self.data.Close) - 1
+        if current_index < self.lookback_period:
+            return
+
+        start_index = current_index - self.lookback_period
+        
+        eurusd_judas_swing = self.data.High[-1] > self.data.High[start_index:current_index].max()
+        dxy_raid = self.data.DXY_Low[-1] < self.data.DXY_Low[start_index:current_index].min()
+        
+        if dxy_raid and eurusd_judas_swing:
+            self.signal_to_trade = -1  # Сигнал на продажу без ML
+        else:
+            self.signal_to_trade = 0
+
+        if self.signal_to_trade == -1 and not self.position:
+            entry_price = self.data.Open[-1] 
+            sl_price = entry_price * (1 + self.sl_ratio)
+            tp_price = entry_price * (1 - self.tp_ratio)
+
+            if not (np.isfinite(entry_price) and np.isfinite(sl_price) and np.isfinite(tp_price)):
+                self.signal_to_trade = 0
+                return
+
+            try:
+                self.sell(sl=sl_price, tp=tp_price)
+            except Exception:
+                pass 
+            self.signal_to_trade = 0
+
 def load_data_from_yfinance(ticker, period="7d", interval="30m"):
     """Загружает данные из Yahoo Finance и обрабатывает возможный MultiIndex."""
-    print(f"Загрузка {period} данных для {ticker}...")
+    print(f"Загрузка {period} данных для {ticker} с интервалом {interval}...")
     try:
         df = yf.download(tickers=ticker, period=period, interval=interval, auto_adjust=True)
         df = flatten_multiindex_columns(df)
@@ -105,14 +148,14 @@ def load_data_from_yfinance(ticker, period="7d", interval="30m"):
         print(f"Критическая ошибка при загрузке {ticker}: {e}")
         raise
 
-def run_backtest(threshold=0.67):
-    """Основная функция для запуска бэктеста."""
-    print("--- Запуск бэктеста ---")
+def run_backtest(threshold=0.55):
+    """Основная функция для запуска бэктеста (30-минутный ТФ)."""
+    print("--- Запуск бэктеста (30m) ---")
     
     # 1. Загрузка данных
     try:
-        eurusd_data = load_data_from_yfinance('EURUSD=X', period='59d')
-        dxy_data = load_data_from_yfinance('DX-Y.NYB', period='59d')
+        eurusd_data = load_data_from_yfinance('EURUSD=X', period='59d', interval='30m')
+        dxy_data = load_data_from_yfinance('DX-Y.NYB', period='59d', interval='30m')
     except Exception as e:
         return f"Ошибка загрузки данных: {e}", None
 
@@ -140,10 +183,92 @@ def run_backtest(threshold=0.67):
     stats = bt.run()
     
     # 5. Сохранение результатов
-    plot_filename = f"backtest_report_{threshold}_{int(time.time())}.html"
+    plot_filename = f"backtest_report_30m_{threshold}_{int(time.time())}.html"
     bt.plot(filename=plot_filename, open_browser=False)
     
-    print("--- Бэктест завершен ---")
+    print("--- Бэктест (30m) завершен ---")
+    return stats, plot_filename
+
+def run_backtest_m5():
+    """Основная функция для запуска бэктеста (5-минутный ТФ)."""
+    print("--- Запуск бэктеста (5m) ---")
+    
+    # 1. Загрузка данных
+    try:
+        eurusd_data = load_data_from_yfinance('EURUSD=X', period='59d', interval='5m')
+        dxy_data = load_data_from_yfinance('DX-Y.NYB', period='59d', interval='5m')
+    except Exception as e:
+        return f"Ошибка загрузки данных: {e}", None
+
+    # 2. Подготовка данных (без индикаторов для этой стратегии)
+    dxy_data_renamed = dxy_data.rename(columns={'Low': 'DXY_Low'})
+    data = pd.concat([eurusd_data, dxy_data_renamed['DXY_Low']], axis=1)
+    data.dropna(inplace=True)
+
+    # 3. Запуск бэктеста
+    bt = Backtest(data, SMCStrategy5m, cash=10000, commission=.0002)
+    stats = bt.run()
+    
+    # 4. Сохранение результатов
+    plot_filename = f"backtest_report_5m_{int(time.time())}.html"
+    bt.plot(filename=plot_filename, open_browser=False)
+    
+    print("--- Бэктест (5m) завершен ---")
+    return stats, plot_filename
+
+def run_full_backtest(threshold=0.55):
+    """Запускает бэктест на основе локальных CSV-файлов."""
+    print("--- Запуск полного бэктеста на CSV ---")
+    
+    # 1. Загрузка данных
+    try:
+        eurusd_file = 'EURUSD_Candlestick_30_m_BID_18.06.2022-18.06.2025 (2).csv'
+        dxy_file = 'DOLLAR.IDXUSD_Candlestick_30_m_BID_18.06.2022-18.06.2025 (2).csv'
+
+        # Загрузка и парсинг дат
+        eurusd_data = pd.read_csv(eurusd_file, parse_dates=['Time'], dayfirst=True)
+        dxy_data = pd.read_csv(dxy_file, parse_dates=['Time'], dayfirst=True)
+        
+        # Переименование колонок
+        eurusd_data.rename(columns={'Time': 'Datetime', 'Open': 'Open', 'High': 'High', 'Low': 'Low', 'Close': 'Close', 'Volume': 'Volume'}, inplace=True)
+        dxy_data.rename(columns={'Time': 'Datetime', 'Low': 'DXY_Low'}, inplace=True)
+        
+        # Установка индекса
+        eurusd_data.set_index('Datetime', inplace=True)
+        dxy_data.set_index('Datetime', inplace=True)
+
+    except FileNotFoundError as e:
+        return f"Ошибка: Файл не найден - {e}. Убедитесь, что файлы котировок находятся в корневой папке проекта.", None
+    except Exception as e:
+        return f"Ошибка загрузки или обработки CSV-файлов: {e}", None
+
+    # 2. Подготовка данных
+    eurusd_data.ta.rsi(length=14, append=True)
+    eurusd_data.ta.macd(fast=12, slow=26, signal=9, append=True)
+    eurusd_data.ta.atr(length=14, append=True)
+    eurusd_data.rename(columns={'RSI_14':'RSI', 'MACD_12_26_9':'MACD', 'MACDh_12_26_9':'MACD_hist', 'MACDs_12_26_9':'MACD_signal', 'ATRr_14':'ATR'}, inplace=True)
+    
+    data = pd.concat([eurusd_data, dxy_data['DXY_Low']], axis=1)
+    data.dropna(inplace=True)
+
+    # 3. Загрузка модели
+    model_file = 'ml_model_final_fix.joblib'
+    if not os.path.exists(model_file):
+        return "Файл модели не найден!", None
+    model = joblib.load(model_file)
+
+    # 4. Запуск бэктеста
+    SMCStrategy.ml_model = model
+    SMCStrategy.prediction_threshold = threshold
+    
+    bt = Backtest(data, SMCStrategy, cash=10000, commission=.0002, margin=0.05)
+    stats = bt.run()
+    
+    # 5. Сохранение результатов
+    plot_filename = f"full_backtest_report_{threshold}_{int(time.time())}.html"
+    bt.plot(filename=plot_filename, open_browser=False)
+    
+    print("--- Полный бэктест завершен ---")
     return stats, plot_filename
 
 # Этот блок больше не нужен, так как запуск будет из бота
