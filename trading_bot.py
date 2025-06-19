@@ -52,6 +52,26 @@ def get_background_loop():
 background_tasks = set()
 
 app = Flask(__name__)
+reports = {}  # {token: (html, expire_time)}
+
+def cleanup_reports():
+    while True:
+        now = time.time()
+        to_delete = [token for token, (_, exp) in reports.items() if exp < now]
+        for token in to_delete:
+            del reports[token]
+        time.sleep(60)
+
+# Запуск очистки отчётов в фоне
+threading.Thread(target=cleanup_reports, daemon=True).start()
+
+@app.route('/game_report')
+def game_report():
+    token = request.args.get('start') or request.args.get('token')
+    if not token or token not in reports:
+        return abort(404, 'Report not found')
+    html, _ = reports[token]
+    return Response(html, mimetype='text/html')
 
 # Загрузка секретов из переменных окружения
 TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
@@ -63,33 +83,6 @@ MODEL_FILE = 'ml_model_final_fix.joblib'
 PREDICTION_THRESHOLD = 0.55 # Оптимальный порог для live-сигналов
 LOOKBACK_PERIOD = 20
 SUBSCRIBERS_FILE = 'subscribers.json'
-
-# --- Flask-сервер для HTML-отчётов (Telegram Game) ---
-app_reports = Flask('reports')
-reports = {}  # {token: (html, expire_time)}
-
-def cleanup_reports():
-    while True:
-        now = time.time()
-        to_delete = [token for token, (_, exp) in reports.items() if exp < now]
-        for token in to_delete:
-            del reports[token]
-        time.sleep(60)
-
-@app_reports.route('/game_report')
-def game_report():
-    token = request.args.get('start') or request.args.get('token')
-    if not token or token not in reports:
-        return abort(404, 'Report not found')
-    html, _ = reports[token]
-    return Response(html, mimetype='text/html')
-
-def start_reports_server():
-    threading.Thread(target=lambda: app_reports.run(host='0.0.0.0', port=8080), daemon=True).start()
-    threading.Thread(target=cleanup_reports, daemon=True).start()
-
-# Запуск сервера при старте бота
-start_reports_server()
 
 # --- 2. Управление Подписчиками ---
 def get_subscribers():
@@ -205,7 +198,6 @@ def check_for_signal():
     return "Активных сигналов нет."
 
 async def run_backtest_async(chat_id, threshold):
-    """Асинхронная функция для запуска бэктеста."""
     logging.info(f"Executing run_backtest_async for chat_id {chat_id} with threshold {threshold}.")
     try:
         await bot.send_message(chat_id, f"✅ Запускаю бэктест с фильтром {threshold}. Это может занять несколько минут...")
@@ -217,7 +209,10 @@ async def run_backtest_async(chat_id, threshold):
             token = str(uuid.uuid4())
             expire_time = time.time() + 1800
             reports[token] = (html, expire_time)
-            await bot.send_game(chat_id, game_short_name='backtest_report', start_parameter=token)
+            try:
+                await bot.send_game(chat_id=chat_id, game_short_name='backtest_report', start_parameter=token)
+            except TypeError:
+                await bot.send_game(chat_id=chat_id, game_short_name='backtest_report')
             os.remove(plot_file)
         else:
             await bot.send_message(chat_id, f"❌ Ошибка во время бэктеста: {stats}")
@@ -225,7 +220,6 @@ async def run_backtest_async(chat_id, threshold):
         await bot.send_message(chat_id, f"❌ Критическая ошибка в задаче бэктеста: {e}")
 
 async def run_full_backtest_async(chat_id, threshold):
-    """Асинхронная функция для запуска полного бэктеста по CSV."""
     logging.info(f"Executing run_full_backtest_async for chat_id {chat_id} with threshold {threshold}.")
     try:
         await bot.send_message(chat_id, f"✅ Запускаю полный бэктест по историческим данным с фильтром {threshold}. Это может занять несколько минут...")
@@ -237,7 +231,10 @@ async def run_full_backtest_async(chat_id, threshold):
             token = str(uuid.uuid4())
             expire_time = time.time() + 1800
             reports[token] = (html, expire_time)
-            await bot.send_game(chat_id, game_short_name='backtest_report', start_parameter=token)
+            try:
+                await bot.send_game(chat_id=chat_id, game_short_name='backtest_report', start_parameter=token)
+            except TypeError:
+                await bot.send_game(chat_id=chat_id, game_short_name='backtest_report')
             os.remove(plot_file)
         else:
             await bot.send_message(chat_id, f"❌ Ошибка во время полного бэктеста: {stats}")
@@ -245,7 +242,6 @@ async def run_full_backtest_async(chat_id, threshold):
         await bot.send_message(chat_id, f"❌ Критическая ошибка в задаче полного бэктеста: {e}")
 
 async def run_backtest_m5_async(chat_id):
-    """Асинхронная функция для запуска бэктеста 5-минутной стратегии."""
     logging.info(f"Executing run_backtest_m5_async for chat_id {chat_id}.")
     try:
         await bot.send_message(chat_id, f"✅ Запускаю бэктест 5-минутной стратегии за 59 дней. Это может занять несколько минут...")
@@ -257,7 +253,10 @@ async def run_backtest_m5_async(chat_id):
             token = str(uuid.uuid4())
             expire_time = time.time() + 1800
             reports[token] = (html, expire_time)
-            await bot.send_game(chat_id, game_short_name='backtest_report', start_parameter=token)
+            try:
+                await bot.send_game(chat_id=chat_id, game_short_name='backtest_report', start_parameter=token)
+            except TypeError:
+                await bot.send_game(chat_id=chat_id, game_short_name='backtest_report')
             os.remove(plot_file)
         else:
             await bot.send_message(chat_id, f"❌ Ошибка во время 5-минутного бэктеста: {stats}")
