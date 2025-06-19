@@ -273,7 +273,12 @@ async def handle_update(update):
             if remove_subscriber(chat_id):
                 await bot.send_message(chat_id, "Вы успешно отписались от сигналов.")
             else:
-                await bot.send_message(chat_id, "Вы не были подписаны.")
+                await bot.send_message(chat_id, "Вы уже подписаны.")
+        elif text == '/check':
+            logging.info(f"Ручная проверка по команде /check от chat_id {chat_id}")
+            task = asyncio.create_task(run_check_and_report(chat_id))
+            background_tasks.add(task)
+            task.add_done_callback(background_tasks.discard)
         elif text.startswith('/backtest_m5'):
             logging.info(f"'/backtest_m5' command recognized for chat_id {chat_id}.")
             task = asyncio.create_task(run_backtest_m5_async(chat_id))
@@ -310,21 +315,6 @@ async def handle_update(update):
             except (ValueError, IndexError):
                 logging.error("Failed to parse /fullbacktest command.", exc_info=True)
                 await bot.send_message(chat_id, "Неверный формат. Используйте: /fullbacktest [уровень_фильтра], например: /fullbacktest 0.55")
-        elif text == '/check':
-            try:
-                # Запускаем генерацию сигналов в фоновом потоке, чтобы не блокировать ответ
-                loop = get_background_loop()
-                task = asyncio.run_coroutine_threadsafe(
-                    generate_and_send_signals(),
-                    loop
-                )
-                # Ждем завершения, если нужно для отладки, но обычно это не требуется
-                # task.result() 
-                return "Check initiated", 200
-
-            except Exception as e:
-                logging.error(f"Критическая ошибка в check_route: {e}", exc_info=True)
-                return "Error", 500
         else:
             logging.info(f"Command '{text}' not recognized by any handler.")
 
@@ -360,28 +350,47 @@ def check_route():
     """
     print("Получен запрос на /check от планировщика.")
     try:
-        # Запускаем генерацию сигналов в фоновом потоке, чтобы не блокировать ответ
+        # Запускаем генерацию и рассылку сигналов в фоновом потоке
         loop = get_background_loop()
         task = asyncio.run_coroutine_threadsafe(
             generate_and_send_signals(),
             loop
         )
-        # Ждем завершения, если нужно для отладки, но обычно это не требуется
-        # task.result() 
         return "Check initiated", 200
 
     except Exception as e:
         logging.error(f"Критическая ошибка в check_route: {e}", exc_info=True)
         return "Error", 500
 
+async def run_check_and_report(chat_id):
+    """Запускает проверку сигналов и отправляет отчет конкретному пользователю."""
+    await bot.send_message(chat_id, "🔍 Начинаю ручную проверку сигналов...")
+    
+    try:
+        # Проверяем оба ТФ
+        _, _, _, _, _, _, _, status_5m = generate_signal_and_plot()
+        _, _, _, _, _, _, _, status_30m = generate_signal_and_plot_30m()
+
+        # Формируем и отправляем отчет
+        report = (
+            f"Отчет о проверке:\n\n"
+            f"🔹 **5 минут:** {status_5m}\n"
+            f"🔸 **30 минут:** {status_30m}"
+        )
+        await bot.send_message(chat_id, report, parse_mode='Markdown')
+
+    except Exception as e:
+        logging.error(f"Ошибка при выполнении ручной проверки для chat_id {chat_id}: {e}", exc_info=True)
+        await bot.send_message(chat_id, f"❌ Произошла ошибка во время проверки: {e}")
+
 async def generate_and_send_signals():
-    """Генерирует и отправляет все типы сигналов."""
+    """Генерирует, и если находит, рассылает все типы сигналов подписчикам."""
     try:
         # 5-минутный таймфрейм
-        signal_5m, entry_5m, sl_5m, tp_5m, last_5m, image_path_5m, timeframe_5m = generate_signal_and_plot()
+        signal_5m, entry_5m, sl_5m, tp_5m, last_5m, image_path_5m, timeframe_5m, _ = generate_signal_and_plot()
         
         # 30-минутный таймфрейм
-        signal_30m, entry_30m, sl_30m, tp_30m, last_30m, image_path_30m, timeframe_30m = generate_signal_and_plot_30m()
+        signal_30m, entry_30m, sl_30m, tp_30m, last_30m, image_path_30m, timeframe_30m, _ = generate_signal_and_plot_30m()
 
         # Если есть хотя бы один сигнал, отправляем
         if signal_5m or signal_30m:
