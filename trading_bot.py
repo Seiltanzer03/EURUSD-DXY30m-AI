@@ -7,7 +7,7 @@ import yfinance as yf
 import telegram
 from flask import Flask, request
 import asyncio
-from trading_strategy import run_backtest
+from trading_strategy import run_backtest, run_full_backtest, run_backtest_m5
 import threading
 import logging
 import subprocess
@@ -57,7 +57,7 @@ bot = telegram.Bot(token=TELEGRAM_BOT_TOKEN)
 
 # Настройки стратегии
 MODEL_FILE = 'ml_model_final_fix.joblib'
-PREDICTION_THRESHOLD = 0.67 # Оптимальный порог для live-сигналов
+PREDICTION_THRESHOLD = 0.55 # Оптимальный порог для live-сигналов
 LOOKBACK_PERIOD = 20
 SUBSCRIBERS_FILE = 'subscribers.json'
 
@@ -200,6 +200,44 @@ async def run_backtest_async(chat_id, threshold):
     except Exception as e:
         await bot.send_message(chat_id, f"❌ Критическая ошибка в задаче бэктеста: {e}")
 
+async def run_full_backtest_async(chat_id, threshold):
+    """Асинхронная функция для запуска полного бэктеста по CSV."""
+    logging.info(f"Executing run_full_backtest_async for chat_id {chat_id} with threshold {threshold}.")
+    try:
+        await bot.send_message(chat_id, f"✅ Запускаю полный бэктест по историческим данным с фильтром {threshold}. Это может занять несколько минут...")
+        
+        stats, plot_file = await asyncio.to_thread(run_full_backtest, threshold)
+        
+        if plot_file:
+            await bot.send_message(chat_id, f"📊 Результаты полного бэктеста:\n\n<pre>{stats}</pre>", parse_mode='HTML')
+            with open(plot_file, 'rb') as f:
+                await bot.send_document(chat_id, document=f, caption=f"Подробный отчет по полному бэктесту с фильтром {threshold}")
+            os.remove(plot_file)
+        else:
+            await bot.send_message(chat_id, f"❌ Ошибка во время полного бэктеста: {stats}")
+            
+    except Exception as e:
+        await bot.send_message(chat_id, f"❌ Критическая ошибка в задаче полного бэктеста: {e}")
+
+async def run_backtest_m5_async(chat_id):
+    """Асинхронная функция для запуска бэктеста 5-минутной стратегии."""
+    logging.info(f"Executing run_backtest_m5_async for chat_id {chat_id}.")
+    try:
+        await bot.send_message(chat_id, f"✅ Запускаю бэктест 5-минутной стратегии за 59 дней. Это может занять несколько минут...")
+        
+        stats, plot_file = await asyncio.to_thread(run_backtest_m5)
+        
+        if plot_file:
+            await bot.send_message(chat_id, f"📊 Результаты 5-минутного бэктеста:\n\n<pre>{stats}</pre>", parse_mode='HTML')
+            with open(plot_file, 'rb') as f:
+                await bot.send_document(chat_id, document=f, caption=f"Подробный отчет по бэктесту 5-минутной стратегии")
+            os.remove(plot_file)
+        else:
+            await bot.send_message(chat_id, f"❌ Ошибка во время 5-минутного бэктеста: {stats}")
+            
+    except Exception as e:
+        await bot.send_message(chat_id, f"❌ Критическая ошибка в задаче 5-минутного бэктеста: {e}")
+
 # Вспомогательная функция для парсинга текста и пути к графику
 def parse_signal_output(output):
     lines = output.strip().split('\n')
@@ -236,10 +274,16 @@ async def handle_update(update):
                 await bot.send_message(chat_id, "Вы успешно отписались от сигналов.")
             else:
                 await bot.send_message(chat_id, "Вы не были подписаны.")
+        elif text.startswith('/backtest_m5'):
+            logging.info(f"'/backtest_m5' command recognized for chat_id {chat_id}.")
+            task = asyncio.create_task(run_backtest_m5_async(chat_id))
+            background_tasks.add(task)
+            task.add_done_callback(background_tasks.discard)
+            logging.info(f"Backtest_m5 task for chat_id {chat_id} has been created and stored.")
         elif text.startswith('/backtest'):
             logging.info(f"'/backtest' command recognized for chat_id {chat_id}.")
             try:
-                threshold = 0.67
+                threshold = 0.55
                 parts = text.split()
                 if len(parts) > 1:
                     threshold = float(parts[1])
@@ -250,7 +294,22 @@ async def handle_update(update):
                 logging.info(f"Backtest task for chat_id {chat_id} has been created and stored.")
             except (ValueError, IndexError):
                 logging.error("Failed to parse /backtest command.", exc_info=True)
-                await bot.send_message(chat_id, "Неверный формат. Используйте: /backtest [уровень_фильтра], например: /backtest 0.67")
+                await bot.send_message(chat_id, "Неверный формат. Используйте: /backtest [уровень_фильтра], например: /backtest 0.55")
+        elif text.startswith('/fullbacktest'):
+            logging.info(f"'/fullbacktest' command recognized for chat_id {chat_id}.")
+            try:
+                threshold = 0.55
+                parts = text.split()
+                if len(parts) > 1:
+                    threshold = float(parts[1])
+                
+                task = asyncio.create_task(run_full_backtest_async(chat_id, threshold))
+                background_tasks.add(task)
+                task.add_done_callback(background_tasks.discard)
+                logging.info(f"Full backtest task for chat_id {chat_id} has been created.")
+            except (ValueError, IndexError):
+                logging.error("Failed to parse /fullbacktest command.", exc_info=True)
+                await bot.send_message(chat_id, "Неверный формат. Используйте: /fullbacktest [уровень_фильтра], например: /fullbacktest 0.55")
         elif text == '/check':
             try:
                 # 5-минутный таймфрейм
