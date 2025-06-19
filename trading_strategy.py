@@ -225,13 +225,13 @@ def run_full_backtest(threshold=0.55):
         eurusd_file = 'EURUSD_Candlestick_30_m_BID_18.06.2022-18.06.2025 (2).csv'
         dxy_file = 'DOLLAR.IDXUSD_Candlestick_30_m_BID_18.06.2022-18.06.2025 (2).csv'
 
-        # Загрузка и парсинг дат
-        eurusd_data = pd.read_csv(eurusd_file, parse_dates=['Time'], dayfirst=True)
-        dxy_data = pd.read_csv(dxy_file, parse_dates=['Time'], dayfirst=True)
+        # Загрузка и парсинг дат с правильным именем колонки
+        eurusd_data = pd.read_csv(eurusd_file, parse_dates=['Gmt time'], dayfirst=True)
+        dxy_data = pd.read_csv(dxy_file, parse_dates=['Gmt time'], dayfirst=True)
         
         # Переименование колонок
-        eurusd_data.rename(columns={'Time': 'Datetime', 'Open': 'Open', 'High': 'High', 'Low': 'Low', 'Close': 'Close', 'Volume': 'Volume'}, inplace=True)
-        dxy_data.rename(columns={'Time': 'Datetime', 'Low': 'DXY_Low'}, inplace=True)
+        eurusd_data.rename(columns={'Gmt time': 'Datetime', 'Open': 'Open', 'High': 'High', 'Low': 'Low', 'Close': 'Close', 'Volume': 'Volume'}, inplace=True)
+        dxy_data.rename(columns={'Gmt time': 'Datetime', 'Low': 'DXY_Low'}, inplace=True)
         
         # Установка индекса
         eurusd_data.set_index('Datetime', inplace=True)
