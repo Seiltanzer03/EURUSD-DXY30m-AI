@@ -5,7 +5,7 @@ import yfinance as yf
 import joblib
 import ssl
 import matplotlib.pyplot as plt
-from signal_core import generate_signal_and_plot, TIMEFRAME
+from signal_core import generate_signal_and_plot
 
 # Отключение SSL-проверки для yfinance
 try:
@@ -69,7 +69,7 @@ def get_last_signal():
         plt.axhline(tp, color='green', linestyle='--', label='Take Profit')
         plt.scatter([last.name], [entry], color='blue', marker='v', s=100, label='Sell Entry')
         plt.legend()
-        plt.title(f'SELL EURUSD ({TIMEFRAME})')
+        plt.title(f'SELL EURUSD ({TIMEFRAME_5M})')
         plt.tight_layout()
         plot_path = 'signal.png'
         plt.savefig(plot_path)
@@ -81,7 +81,7 @@ if __name__ == "__main__":
     if signal is None:
         print("Нет сигнала (недостаточно данных или NaN)")
     elif signal:
-        print(f"СИГНАЛ: SELL EURUSD ({TIMEFRAME})\nВремя: {last.name}\nEntry: {entry:.5f}\nStop Loss: {sl:.5f}\nTake Profit: {tp:.5f}")
+        print(f"СИГНАЛ: SELL EURUSD ({TIMEFRAME_5M})\nВремя: {last.name}\nEntry: {entry:.5f}\nStop Loss: {sl:.5f}\nTake Profit: {tp:.5f}")
         if plot_path:
             print(f"GRAPH_PATH: {plot_path}")
     else:
