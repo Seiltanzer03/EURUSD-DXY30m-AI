@@ -5,7 +5,7 @@ import pandas_ta as ta
 import joblib
 import yfinance as yf
 import telegram
-from flask import Flask, request
+from flask import Flask, request, abort, Response
 import asyncio
 from trading_strategy import run_backtest, run_full_backtest, run_backtest_m5
 import threading
@@ -13,6 +13,9 @@ import logging
 import subprocess
 import re
 from signal_core import generate_signal_and_plot, generate_signal_and_plot_30m
+import uuid
+import requests
+import time
 
 # --- 1. Конфигурация и Инициализация ---
 
@@ -60,6 +63,33 @@ MODEL_FILE = 'ml_model_final_fix.joblib'
 PREDICTION_THRESHOLD = 0.55 # Оптимальный порог для live-сигналов
 LOOKBACK_PERIOD = 20
 SUBSCRIBERS_FILE = 'subscribers.json'
+
+# --- Flask-сервер для HTML-отчётов (Telegram Game) ---
+app_reports = Flask('reports')
+reports = {}  # {token: (html, expire_time)}
+
+def cleanup_reports():
+    while True:
+        now = time.time()
+        to_delete = [token for token, (_, exp) in reports.items() if exp < now]
+        for token in to_delete:
+            del reports[token]
+        time.sleep(60)
+
+@app_reports.route('/game_report')
+def game_report():
+    token = request.args.get('start') or request.args.get('token')
+    if not token or token not in reports:
+        return abort(404, 'Report not found')
+    html, _ = reports[token]
+    return Response(html, mimetype='text/html')
+
+def start_reports_server():
+    threading.Thread(target=lambda: app_reports.run(host='0.0.0.0', port=8080), daemon=True).start()
+    threading.Thread(target=cleanup_reports, daemon=True).start()
+
+# Запуск сервера при старте бота
+start_reports_server()
 
 # --- 2. Управление Подписчиками ---
 def get_subscribers():
@@ -178,25 +208,19 @@ async def run_backtest_async(chat_id, threshold):
     """Асинхронная функция для запуска бэктеста."""
     logging.info(f"Executing run_backtest_async for chat_id {chat_id} with threshold {threshold}.")
     try:
-        # 1. Уведомляем пользователя о начале
         await bot.send_message(chat_id, f"✅ Запускаю бэктест с фильтром {threshold}. Это может занять несколько минут...")
-        
-        # 2. Запускаем ресурсоемкую функцию бэктеста в отдельном потоке, не блокируя event loop
         stats, plot_file = await asyncio.to_thread(run_backtest, threshold)
-        
-        # 3. Отправляем результаты
         if plot_file:
-            # Отправляем статистику
             await bot.send_message(chat_id, f"📊 Результаты бэктеста:\n\n<pre>{stats}</pre>", parse_mode='HTML')
-            
-            # Отправляем HTML-отчет
-            with open(plot_file, 'rb') as f:
-                await bot.send_document(chat_id, document=f, caption=f"Подробный отчет по бэктесту с фильтром {threshold}")
-            os.remove(plot_file) # Удаляем файл после отправки
+            with open(plot_file, 'r', encoding='utf-8') as f:
+                html = f.read()
+            token = str(uuid.uuid4())
+            expire_time = time.time() + 1800
+            reports[token] = (html, expire_time)
+            await bot.send_game(chat_id, game_short_name='backtest_report', start_parameter=token)
+            os.remove(plot_file)
         else:
-            # Если бэктест не удался, stats содержит текст ошибки
             await bot.send_message(chat_id, f"❌ Ошибка во время бэктеста: {stats}")
-            
     except Exception as e:
         await bot.send_message(chat_id, f"❌ Критическая ошибка в задаче бэктеста: {e}")
 
@@ -205,17 +229,18 @@ async def run_full_backtest_async(chat_id, threshold):
     logging.info(f"Executing run_full_backtest_async for chat_id {chat_id} with threshold {threshold}.")
     try:
         await bot.send_message(chat_id, f"✅ Запускаю полный бэктест по историческим данным с фильтром {threshold}. Это может занять несколько минут...")
-        
         stats, plot_file = await asyncio.to_thread(run_full_backtest, threshold)
-        
         if plot_file:
             await bot.send_message(chat_id, f"📊 Результаты полного бэктеста:\n\n<pre>{stats}</pre>", parse_mode='HTML')
-            with open(plot_file, 'rb') as f:
-                await bot.send_document(chat_id, document=f, caption=f"Подробный отчет по полному бэктесту с фильтром {threshold}")
+            with open(plot_file, 'r', encoding='utf-8') as f:
+                html = f.read()
+            token = str(uuid.uuid4())
+            expire_time = time.time() + 1800
+            reports[token] = (html, expire_time)
+            await bot.send_game(chat_id, game_short_name='backtest_report', start_parameter=token)
             os.remove(plot_file)
         else:
             await bot.send_message(chat_id, f"❌ Ошибка во время полного бэктеста: {stats}")
-            
     except Exception as e:
         await bot.send_message(chat_id, f"❌ Критическая ошибка в задаче полного бэктеста: {e}")
 
@@ -224,17 +249,18 @@ async def run_backtest_m5_async(chat_id):
     logging.info(f"Executing run_backtest_m5_async for chat_id {chat_id}.")
     try:
         await bot.send_message(chat_id, f"✅ Запускаю бэктест 5-минутной стратегии за 59 дней. Это может занять несколько минут...")
-        
         stats, plot_file = await asyncio.to_thread(run_backtest_m5)
-        
         if plot_file:
             await bot.send_message(chat_id, f"📊 Результаты 5-минутного бэктеста:\n\n<pre>{stats}</pre>", parse_mode='HTML')
-            with open(plot_file, 'rb') as f:
-                await bot.send_document(chat_id, document=f, caption=f"Подробный отчет по бэктесту 5-минутной стратегии")
+            with open(plot_file, 'r', encoding='utf-8') as f:
+                html = f.read()
+            token = str(uuid.uuid4())
+            expire_time = time.time() + 1800
+            reports[token] = (html, expire_time)
+            await bot.send_game(chat_id, game_short_name='backtest_report', start_parameter=token)
             os.remove(plot_file)
         else:
             await bot.send_message(chat_id, f"❌ Ошибка во время 5-минутного бэктеста: {stats}")
-            
     except Exception as e:
         await bot.send_message(chat_id, f"❌ Критическая ошибка в задаче 5-минутного бэктеста: {e}")
 
