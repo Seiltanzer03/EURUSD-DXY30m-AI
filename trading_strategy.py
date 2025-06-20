@@ -11,7 +11,7 @@ import re
 
 def disable_pan_tool_in_html(html_file):
     """
-    Модифицирует HTML-файл отчета бэктеста, чтобы отключить инструмент Pan (x-axis) по умолчанию.
+    Модифицирует HTML-файл отчета бэктеста, чтобы полностью удалить инструменты Pan (x-axis) и Wheel Zoom (x-axis).
     
     Параметры:
     - html_file: путь к HTML-файлу отчета
@@ -21,9 +21,9 @@ def disable_pan_tool_in_html(html_file):
         with open(html_file, 'r', encoding='utf-8') as f:
             html_content = f.read()
         
-        # Добавляем JavaScript-код для отключения инструмента Pan (x-axis)
-        # Этот код будет выполнен после загрузки страницы и отключит инструмент Pan
-        disable_pan_js = """
+        # Добавляем JavaScript-код для удаления инструментов Pan (x-axis) и Wheel Zoom (x-axis)
+        # Этот подход более радикальный - мы полностью удаляем эти инструменты из панели
+        disable_tools_js = """
         <script type="text/javascript">
         document.addEventListener("DOMContentLoaded", function() {
             // Ждем загрузку Bokeh
@@ -33,14 +33,23 @@ def disable_pan_tool_in_html(html_file):
                 
                 // Для каждой панели инструментов
                 toolbars.forEach(function(toolbar) {
-                    // Находим кнопку Pan (x-axis) и отключаем её
+                    // Находим и удаляем кнопки Pan (x-axis)
                     var panButtons = toolbar.querySelectorAll("button.bk-tool-icon-pan");
                     panButtons.forEach(function(btn) {
-                        // Симулируем клик по кнопке, если она активна
-                        if (btn.classList.contains("bk-active")) {
-                            btn.click();
-                        }
+                        btn.parentNode.removeChild(btn);
                     });
+                    
+                    // Находим и удаляем кнопки Wheel Zoom (x-axis)
+                    var wheelZoomButtons = toolbar.querySelectorAll("button.bk-tool-icon-wheel-zoom");
+                    wheelZoomButtons.forEach(function(btn) {
+                        btn.parentNode.removeChild(btn);
+                    });
+                    
+                    // Активируем другой инструмент по умолчанию (например, box zoom)
+                    var boxZoomButtons = toolbar.querySelectorAll("button.bk-tool-icon-box-zoom");
+                    if (boxZoomButtons.length > 0 && !boxZoomButtons[0].classList.contains("bk-active")) {
+                        boxZoomButtons[0].click();
+                    }
                 });
             }, 1000); // Задержка для уверенности, что Bokeh полностью загрузился
         });
@@ -48,13 +57,23 @@ def disable_pan_tool_in_html(html_file):
         """
         
         # Вставляем JavaScript-код перед закрывающим тегом </body>
-        modified_html = re.sub('</body>', disable_pan_js + '</body>', html_content)
+        modified_html = re.sub('</body>', disable_tools_js + '</body>', html_content)
+        
+        # Также попробуем удалить определения этих инструментов из конфигурации Bokeh
+        # Это более сложный подход, но может быть более эффективным
+        # Ищем определения инструментов в конфигурации
+        pan_tool_pattern = r'(\{"type":"PanTool"[^}]*\})'
+        wheel_zoom_pattern = r'(\{"type":"WheelZoomTool"[^}]*\})'
+        
+        # Удаляем определения этих инструментов
+        modified_html = re.sub(pan_tool_pattern, '', modified_html)
+        modified_html = re.sub(wheel_zoom_pattern, '', modified_html)
         
         # Записываем модифицированный HTML обратно в файл
         with open(html_file, 'w', encoding='utf-8') as f:
             f.write(modified_html)
             
-        print(f"HTML-файл {html_file} успешно модифицирован для отключения Pan (x-axis)")
+        print(f"HTML-файл {html_file} успешно модифицирован для удаления Pan (x-axis) и Wheel Zoom (x-axis)")
         return True
     except Exception as e:
         print(f"Ошибка при модификации HTML-файла: {e}")
@@ -238,7 +257,7 @@ def run_backtest(threshold=0.55):
     plot_filename = f"backtest_report_30m_{threshold}_{int(time.time())}.html"
     bt.plot(filename=plot_filename, open_browser=False)
     
-    # Модифицируем HTML-файл, чтобы отключить инструмент Pan (x-axis)
+    # Модифицируем HTML-файл, чтобы отключить инструменты Pan (x-axis) и Wheel Zoom (x-axis)
     disable_pan_tool_in_html(plot_filename)
     
     print("--- Бэктест (30m) завершен ---")
@@ -268,7 +287,7 @@ def run_backtest_m5():
     plot_filename = f"backtest_report_5m_{int(time.time())}.html"
     bt.plot(filename=plot_filename, open_browser=False)
     
-    # Модифицируем HTML-файл, чтобы отключить инструмент Pan (x-axis)
+    # Модифицируем HTML-файл, чтобы отключить инструменты Pan (x-axis) и Wheel Zoom (x-axis)
     disable_pan_tool_in_html(plot_filename)
     
     print("--- Бэктест (5m) завершен ---")
@@ -326,7 +345,7 @@ def run_full_backtest(threshold=0.55):
     plot_filename = f"full_backtest_report_{threshold}_{int(time.time())}.html"
     bt.plot(filename=plot_filename, open_browser=False)
     
-    # Модифицируем HTML-файл, чтобы отключить инструмент Pan (x-axis)
+    # Модифицируем HTML-файл, чтобы отключить инструменты Pan (x-axis) и Wheel Zoom (x-axis)
     disable_pan_tool_in_html(plot_filename)
     
     print("--- Полный бэктест завершен ---")
