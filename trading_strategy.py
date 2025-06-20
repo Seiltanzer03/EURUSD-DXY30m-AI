@@ -7,6 +7,58 @@ import numpy as np
 import yfinance as yf
 import time
 import requests
+import re
+
+def disable_pan_tool_in_html(html_file):
+    """
+    Модифицирует HTML-файл отчета бэктеста, чтобы отключить инструмент Pan (x-axis) по умолчанию.
+    
+    Параметры:
+    - html_file: путь к HTML-файлу отчета
+    """
+    try:
+        # Читаем содержимое HTML-файла
+        with open(html_file, 'r', encoding='utf-8') as f:
+            html_content = f.read()
+        
+        # Добавляем JavaScript-код для отключения инструмента Pan (x-axis)
+        # Этот код будет выполнен после загрузки страницы и отключит инструмент Pan
+        disable_pan_js = """
+        <script type="text/javascript">
+        document.addEventListener("DOMContentLoaded", function() {
+            // Ждем загрузку Bokeh
+            setTimeout(function() {
+                // Находим все элементы панели инструментов
+                var toolbars = document.querySelectorAll(".bk-toolbar-box");
+                
+                // Для каждой панели инструментов
+                toolbars.forEach(function(toolbar) {
+                    // Находим кнопку Pan (x-axis) и отключаем её
+                    var panButtons = toolbar.querySelectorAll("button.bk-tool-icon-pan");
+                    panButtons.forEach(function(btn) {
+                        // Симулируем клик по кнопке, если она активна
+                        if (btn.classList.contains("bk-active")) {
+                            btn.click();
+                        }
+                    });
+                });
+            }, 1000); // Задержка для уверенности, что Bokeh полностью загрузился
+        });
+        </script>
+        """
+        
+        # Вставляем JavaScript-код перед закрывающим тегом </body>
+        modified_html = re.sub('</body>', disable_pan_js + '</body>', html_content)
+        
+        # Записываем модифицированный HTML обратно в файл
+        with open(html_file, 'w', encoding='utf-8') as f:
+            f.write(modified_html)
+            
+        print(f"HTML-файл {html_file} успешно модифицирован для отключения Pan (x-axis)")
+        return True
+    except Exception as e:
+        print(f"Ошибка при модификации HTML-файла: {e}")
+        return False
 
 def flatten_multiindex_columns(df):
     """
@@ -184,7 +236,10 @@ def run_backtest(threshold=0.55):
     
     # 5. Сохранение результатов
     plot_filename = f"backtest_report_30m_{threshold}_{int(time.time())}.html"
-    bt.plot(filename=plot_filename, open_browser=False, tools="wheel_zoom,box_zoom,reset,save")
+    bt.plot(filename=plot_filename, open_browser=False)
+    
+    # Модифицируем HTML-файл, чтобы отключить инструмент Pan (x-axis)
+    disable_pan_tool_in_html(plot_filename)
     
     print("--- Бэктест (30m) завершен ---")
     return stats, plot_filename
@@ -211,7 +266,10 @@ def run_backtest_m5():
     
     # 4. Сохранение результатов
     plot_filename = f"backtest_report_5m_{int(time.time())}.html"
-    bt.plot(filename=plot_filename, open_browser=False, tools="wheel_zoom,box_zoom,reset,save")
+    bt.plot(filename=plot_filename, open_browser=False)
+    
+    # Модифицируем HTML-файл, чтобы отключить инструмент Pan (x-axis)
+    disable_pan_tool_in_html(plot_filename)
     
     print("--- Бэктест (5m) завершен ---")
     return stats, plot_filename
@@ -266,7 +324,10 @@ def run_full_backtest(threshold=0.55):
     
     # 5. Сохранение результатов
     plot_filename = f"full_backtest_report_{threshold}_{int(time.time())}.html"
-    bt.plot(filename=plot_filename, open_browser=False, tools="wheel_zoom,box_zoom,reset,save")
+    bt.plot(filename=plot_filename, open_browser=False)
+    
+    # Модифицируем HTML-файл, чтобы отключить инструмент Pan (x-axis)
+    disable_pan_tool_in_html(plot_filename)
     
     print("--- Полный бэктест завершен ---")
     return stats, plot_filename
