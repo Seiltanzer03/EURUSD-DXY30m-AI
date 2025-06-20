@@ -70,12 +70,39 @@ threading.Thread(target=cleanup_reports, daemon=True).start()
 def game_report():
     token = request.args.get('start') or request.args.get('token')
     logging.info(f"/game_report запрошен с токеном: {token}")
-    if not token or token not in reports:
-        logging.warning(f"/game_report: токен не найден: {token}. reports.keys(): {list(reports.keys())}")
+    
+    if not token:
+        logging.warning(f"/game_report: токен не предоставлен")
         return abort(404, 'Report not found')
-    html, _ = reports[token]
-    logging.info(f"/game_report: отдаю отчёт для токена: {token}")
-    return Response(html, mimetype='text/html')
+        
+    # Проверяем, если токен содержится в reports напрямую
+    if token in reports:
+        html, _ = reports[token]
+        logging.info(f"/game_report: отдаю отчёт для токена: {token}")
+        return Response(html, mimetype='text/html')
+    
+    # Если токен не найден напрямую, проверяем по user_id  
+    # Предполагаем, что токен может быть просто user_id, и нам нужно найти последний отчет для этого пользователя
+    try:
+        user_id = int(token.split('_')[0]) if '_' in token else int(token)
+        user_reports = sorted([
+            (t, exp_time) 
+            for t, (_, exp_time) in reports.items() 
+            if t.startswith(f"{user_id}_")
+        ], key=lambda x: x[1], reverse=True)
+        
+        if user_reports:
+            # Берем самый свежий отчет для этого пользователя
+            actual_token = user_reports[0][0]
+            html, _ = reports[actual_token]
+            logging.info(f"/game_report: отдаю отчёт для пользователя {user_id}, найден по токену: {actual_token}")
+            return Response(html, mimetype='text/html')
+    except (ValueError, IndexError, AttributeError) as e:
+        logging.warning(f"/game_report: ошибка при поиске отчета по user_id из токена: {e}")
+        
+    # Если ничего не нашли
+    logging.warning(f"/game_report: токен не найден: {token}. reports.keys(): {list(reports.keys())}")
+    return abort(404, 'Report not found')
 
 # Загрузка секретов из переменных окружения
 TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
@@ -210,7 +237,8 @@ async def run_backtest_async(chat_id, threshold):
             await bot.send_message(chat_id, f"📊 Результаты бэктеста:\n\n<pre>{stats}</pre>", parse_mode='HTML')
             with open(plot_file, 'r', encoding='utf-8') as f:
                 html = f.read()
-            token = str(uuid.uuid4())
+            # Формируем токен с указанием ID пользователя
+            token = f"{chat_id}_{str(uuid.uuid4())}"
             expire_time = time.time() + 1800
             reports[token] = (html, expire_time)
             logging.info(f"Сохраняю отчёт для chat_id={chat_id}, token={token}, файл={plot_file}")
@@ -242,7 +270,8 @@ async def run_full_backtest_async(chat_id, threshold):
             await bot.send_message(chat_id, f"📊 Результаты полного бэктеста:\n\n<pre>{stats}</pre>", parse_mode='HTML')
             with open(plot_file, 'r', encoding='utf-8') as f:
                 html = f.read()
-            token = str(uuid.uuid4())
+            # Формируем токен с указанием ID пользователя
+            token = f"{chat_id}_{str(uuid.uuid4())}"
             expire_time = time.time() + 1800
             reports[token] = (html, expire_time)
             logging.info(f"Сохраняю полный отчёт для chat_id={chat_id}, token={token}, файл={plot_file}")
@@ -274,7 +303,8 @@ async def run_backtest_m5_async(chat_id):
             await bot.send_message(chat_id, f"📊 Результаты 5-минутного бэктеста:\n\n<pre>{stats}</pre>", parse_mode='HTML')
             with open(plot_file, 'r', encoding='utf-8') as f:
                 html = f.read()
-            token = str(uuid.uuid4())
+            # Формируем токен с указанием ID пользователя
+            token = f"{chat_id}_{str(uuid.uuid4())}"
             expire_time = time.time() + 1800
             reports[token] = (html, expire_time)
             logging.info(f"Сохраняю 5m отчёт для chat_id={chat_id}, token={token}, файл={plot_file}")
@@ -514,6 +544,20 @@ async def send_signals(signal_5m, entry_5m, sl_5m, tp_5m, last_5m, image_path_5m
                 os.remove(img_path) # Удаляем после отправки
         except Exception as e:
             logging.error(f"Не удалось отправить сигнал подписчику {chat_id}: {e}")
+
+@app.route('/save_report', methods=['POST'])
+def save_report():
+    try:
+        data = request.get_json()
+        token = data['token']
+        html = data['html']
+        expire_time = time.time() + 1800  # 30 минут жизни
+        reports[token] = (html, expire_time)
+        logging.info(f"API: Сохранен отчет с токеном {token}")
+        return {'status': 'ok'}
+    except Exception as e:
+        logging.error(f"Ошибка при обработке запроса /save_report: {e}", exc_info=True)
+        return {'status': 'error', 'message': str(e)}, 500
 
 @app.route('/')
 def index():
