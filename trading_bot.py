@@ -16,6 +16,7 @@ from signal_core import generate_signal_and_plot, generate_signal_and_plot_30m
 import uuid
 import requests
 import time
+from telegram_game_handler import handle_game_callback_query, send_report_to_game_server
 
 # --- 1. Конфигурация и Инициализация ---
 
@@ -68,9 +69,12 @@ threading.Thread(target=cleanup_reports, daemon=True).start()
 @app.route('/game_report')
 def game_report():
     token = request.args.get('start') or request.args.get('token')
+    logging.info(f"/game_report запрошен с токеном: {token}")
     if not token or token not in reports:
+        logging.warning(f"/game_report: токен не найден: {token}. reports.keys(): {list(reports.keys())}")
         return abort(404, 'Report not found')
     html, _ = reports[token]
+    logging.info(f"/game_report: отдаю отчёт для токена: {token}")
     return Response(html, mimetype='text/html')
 
 # Загрузка секретов из переменных окружения
@@ -209,14 +213,24 @@ async def run_backtest_async(chat_id, threshold):
             token = str(uuid.uuid4())
             expire_time = time.time() + 1800
             reports[token] = (html, expire_time)
+            logging.info(f"Сохраняю отчёт для chat_id={chat_id}, token={token}, файл={plot_file}")
+            
+            # Отправляем отчет на сервер игры
+            send_report_to_game_server(token, html)
+            
             try:
-                await bot.send_game(chat_id=chat_id, game_short_name='backtest_report', start_parameter=token)
-            except TypeError:
+                await bot.send_game(
+                    chat_id=chat_id, 
+                    game_short_name='backtest_report',
+                    start_parameter=token
+                )
+            except (TypeError, ValueError):
                 await bot.send_game(chat_id=chat_id, game_short_name='backtest_report')
             os.remove(plot_file)
         else:
             await bot.send_message(chat_id, f"❌ Ошибка во время бэктеста: {stats}")
     except Exception as e:
+        logging.error(f"Ошибка в run_backtest_async: {e}", exc_info=True)
         await bot.send_message(chat_id, f"❌ Критическая ошибка в задаче бэктеста: {e}")
 
 async def run_full_backtest_async(chat_id, threshold):
@@ -231,14 +245,24 @@ async def run_full_backtest_async(chat_id, threshold):
             token = str(uuid.uuid4())
             expire_time = time.time() + 1800
             reports[token] = (html, expire_time)
+            logging.info(f"Сохраняю полный отчёт для chat_id={chat_id}, token={token}, файл={plot_file}")
+            
+            # Отправляем отчет на сервер игры
+            send_report_to_game_server(token, html)
+            
             try:
-                await bot.send_game(chat_id=chat_id, game_short_name='backtest_report', start_parameter=token)
-            except TypeError:
+                await bot.send_game(
+                    chat_id=chat_id, 
+                    game_short_name='backtest_report',
+                    start_parameter=token
+                )
+            except (TypeError, ValueError):
                 await bot.send_game(chat_id=chat_id, game_short_name='backtest_report')
             os.remove(plot_file)
         else:
             await bot.send_message(chat_id, f"❌ Ошибка во время полного бэктеста: {stats}")
     except Exception as e:
+        logging.error(f"Ошибка в run_full_backtest_async: {e}", exc_info=True)
         await bot.send_message(chat_id, f"❌ Критическая ошибка в задаче полного бэктеста: {e}")
 
 async def run_backtest_m5_async(chat_id):
@@ -253,14 +277,24 @@ async def run_backtest_m5_async(chat_id):
             token = str(uuid.uuid4())
             expire_time = time.time() + 1800
             reports[token] = (html, expire_time)
+            logging.info(f"Сохраняю 5m отчёт для chat_id={chat_id}, token={token}, файл={plot_file}")
+            
+            # Отправляем отчет на сервер игры
+            send_report_to_game_server(token, html)
+            
             try:
-                await bot.send_game(chat_id=chat_id, game_short_name='backtest_report', start_parameter=token)
-            except TypeError:
+                await bot.send_game(
+                    chat_id=chat_id, 
+                    game_short_name='backtest_report',
+                    start_parameter=token
+                )
+            except (TypeError, ValueError):
                 await bot.send_game(chat_id=chat_id, game_short_name='backtest_report')
             os.remove(plot_file)
         else:
             await bot.send_message(chat_id, f"❌ Ошибка во время 5-минутного бэктеста: {stats}")
     except Exception as e:
+        logging.error(f"Ошибка в run_backtest_m5_async: {e}", exc_info=True)
         await bot.send_message(chat_id, f"❌ Критическая ошибка в задаче 5-минутного бэктеста: {e}")
 
 # Вспомогательная функция для парсинга текста и пути к графику
@@ -279,6 +313,11 @@ def parse_signal_output(output):
 async def handle_update(update):
     """Асинхронно обрабатывает входящие сообщения."""
     try:
+        # Проверяем наличие callback_query (для обработки игровых запросов)
+        if update.callback_query and update.callback_query.game_short_name == 'backtest_report':
+            # Вызываем функцию обработки игровых callback_query
+            return await handle_game_callback_query(bot, update, reports)
+        
         if not update.message or not update.message.text:
             logging.warning("Update received without a message or text, ignoring.")
             return
