@@ -41,6 +41,8 @@ SL_RATIO_5M = 0.003
 TP_RATIO_5M = 0.008
 SL_RATIO_30M = 0.004
 TP_RATIO_30M = 0.01
+MODEL_FILE = 'ml_model_final_fix.joblib'
+PREDICTION_THRESHOLD = 0.55
 
 def flatten_multiindex_columns(df):
     if isinstance(df.columns, pd.MultiIndex):
@@ -253,3 +255,215 @@ def generate_signal_and_plot_30m():
         print(status_message)
 
     return signal, entry, sl, tp, last_candle, plot_path, TIMEFRAME_30M, status_message
+
+def find_signals_in_period(minutes=60, timeframe='5m'):
+    """
+    Ищет сигналы за указанный период времени (в минутах) и проверяет, достигли ли они SL или TP.
+    
+    Args:
+        minutes (int): Период в минутах для поиска сигналов
+        timeframe (str): Таймфрейм для анализа ('5m' или '30m')
+    
+    Returns:
+        list: Список найденных сигналов с информацией о статусе (активен/закрыт по SL/TP)
+    """
+    print(f"Поиск сигналов за последние {minutes} минут на таймфрейме {timeframe}")
+    
+    # Определяем период загрузки данных в зависимости от запрошенного периода
+    load_period = "3d"  # Загружаем больше данных, чем нужно для анализа
+    
+    try:
+        # Загружаем данные
+        data = load_data(period=load_period, interval=timeframe)
+        
+        if len(data) < 20:  # Минимальное количество свечей для анализа
+            print(f"Недостаточно данных для анализа: {len(data)} < 20")
+            return []
+        
+        # Определяем параметры в зависимости от таймфрейма
+        if timeframe == TIMEFRAME_5M:
+            lookback_period = LOOKBACK_PERIOD_5M
+            sl_ratio = SL_RATIO_5M
+            tp_ratio = TP_RATIO_5M
+        else:  # 30m
+            lookback_period = LOOKBACK_PERIOD_30M
+            sl_ratio = SL_RATIO_30M
+            tp_ratio = TP_RATIO_30M
+        
+        # Определяем временной диапазон для поиска сигналов
+        now = pd.Timestamp.now(tz='UTC')
+        start_time = now - pd.Timedelta(minutes=minutes)
+        
+        # Фильтруем данные по времени
+        period_data = data[data.index >= start_time]
+        
+        if len(period_data) < 2:
+            print(f"Недостаточно данных в запрошенном периоде: {len(period_data)} < 2")
+            return []
+        
+        # Список для хранения найденных сигналов
+        signals = []
+        
+        # Проходим по всем свечам в периоде, кроме последней (текущей)
+        for i in range(len(period_data) - 1):
+            candle = period_data.iloc[i]
+            candle_time = candle.name
+            
+            # Проверяем наличие сигнала для данной свечи
+            signal = False
+            
+            # Для таймфрейма 5m всегда генерируем сигнал (как в текущей реализации)
+            if timeframe == TIMEFRAME_5M:
+                signal = True
+                entry = candle['Open']
+                sl = entry * (1 + sl_ratio)
+                tp = entry * (1 - tp_ratio)
+            else:
+                # Для 30m применяем логику с паттерном и ML-фильтром
+                # Получаем данные для анализа паттерна
+                candle_index = data.index.get_loc(candle_time)
+                if candle_index < lookback_period:
+                    continue  # Пропускаем, если недостаточно исторических данных
+                
+                start_index = candle_index - lookback_period
+                end_index = candle_index
+                
+                # Проверяем паттерн
+                eurusd_judas_swing = candle['High'] > data['High'].iloc[start_index:end_index].max()
+                dxy_raid = candle['DXY_Low'] < data['DXY_Low'].iloc[start_index:end_index].min()
+                
+                if eurusd_judas_swing and dxy_raid:
+                    # Проверяем ML-фильтр
+                    features = [candle[col] for col in ['RSI', 'MACD', 'MACD_hist', 'MACD_signal', 'ATR']]
+                    if any(np.isnan(features)):
+                        continue
+                    
+                    model = joblib.load(MODEL_FILE)
+                    win_prob = model.predict_proba([features])[0][1]
+                    
+                    if win_prob >= PREDICTION_THRESHOLD:
+                        signal = True
+                        entry = candle['Open']
+                        sl = entry * (1 + sl_ratio)
+                        tp = entry * (1 - tp_ratio)
+            
+            # Если сигнал найден, анализируем его результат
+            if signal:
+                # Получаем все свечи после сигнала
+                future_candles = data.loc[data.index > candle_time]
+                
+                # Проверяем, достигла ли цена уровней SL или TP
+                hit_sl = False
+                hit_tp = False
+                
+                for _, future_candle in future_candles.iterrows():
+                    # Для SELL сигнала: SL - выше входа, TP - ниже входа
+                    if future_candle['High'] >= sl:
+                        hit_sl = True
+                        break
+                    elif future_candle['Low'] <= tp:
+                        hit_tp = True
+                        break
+                
+                # Определяем статус сигнала
+                if hit_sl:
+                    status = "Сделка закрыта по стоп-лоссу"
+                elif hit_tp:
+                    status = "Сделка закрыта по тейк-профиту"
+                else:
+                    status = "Сделка активна"
+                
+                # Создаем график для сигнала
+                plot_path = None
+                try:
+                    # Берем некоторое количество свечей до и после сигнала для графика
+                    start_idx = max(0, data.index.get_loc(candle_time) - 30)
+                    end_idx = min(len(data), data.index.get_loc(candle_time) + 30)
+                    chart_data = data.iloc[start_idx:end_idx].copy()
+                    
+                    if len(chart_data) >= 10:
+                        if chart_data.index.duplicated().any():
+                            chart_data = chart_data.loc[~chart_data.index.duplicated(keep='last')]
+                        chart_data = chart_data.reset_index()
+                        date_col = next((col for col in ['Datetime', 'Date', 'index'] if col in chart_data.columns), None)
+                        chart_data = chart_data.rename(columns={date_col: 'Date'})
+                        chart_data['Date'] = pd.to_datetime(chart_data['Date']).dt.tz_localize(None)
+                        chart_data = chart_data.set_index('Date')
+                        
+                        required_columns = ['Open', 'High', 'Low', 'Close']
+                        for col in required_columns:
+                            chart_data[col] = pd.to_numeric(chart_data[col], errors='coerce')
+                        chart_data = chart_data.dropna(subset=required_columns)
+                        
+                        # Определяем индекс сигнальной свечи на графике
+                        signal_idx = chart_data.reset_index()['Date'].dt.tz_localize('UTC').searchsorted(candle_time)
+                        
+                        # Создаем линии для уровней
+                        apds = [
+                            mpf.make_addplot([entry] * len(chart_data), type='line', color='blue', width=1, linestyle='--', panel=0),
+                            mpf.make_addplot([sl] * len(chart_data), type='line', color='red', width=1, linestyle='--', panel=0),
+                            mpf.make_addplot([tp] * len(chart_data), type='line', color='green', width=1, linestyle='--', panel=0)
+                        ]
+                        
+                        # Добавляем заголовок с информацией о статусе сделки
+                        title = f'SELL EURUSD ({timeframe}) - {status}'
+                        
+                        fig, axes = mpf.plot(
+                            chart_data,
+                            type='candle',
+                            style=s,
+                            title=title,
+                            ylabel='Price',
+                            addplot=apds,
+                            figsize=(12, 9),
+                            returnfig=True,
+                            panels=1
+                        )
+                        
+                        ax = axes[0]
+                        # Отмечаем точку входа
+                        if signal_idx < len(chart_data):
+                            ax.scatter([signal_idx], [entry], color='blue', marker='v', s=120, label='Sell Entry')
+                        
+                        # Добавляем отметки для SL/TP, если они были достигнуты
+                        if hit_sl or hit_tp:
+                            for i, fc in enumerate(future_candles.iterrows()):
+                                idx, future_candle = fc
+                                chart_idx = chart_data.reset_index()['Date'].dt.tz_localize('UTC').searchsorted(idx)
+                                if chart_idx >= len(chart_data):
+                                    continue
+                                
+                                if hit_sl and future_candle['High'] >= sl:
+                                    ax.scatter([chart_idx], [sl], color='red', marker='x', s=150, label='Stop Loss Hit')
+                                    break
+                                elif hit_tp and future_candle['Low'] <= tp:
+                                    ax.scatter([chart_idx], [tp], color='green', marker='o', s=150, label='Take Profit Hit')
+                                    break
+                        
+                        ax.legend(['Entry', 'Stop Loss', 'Take Profit'], loc='upper left')
+                        
+                        # Сохраняем график
+                        import uuid
+                        plot_path = f'signal_{timeframe}_{uuid.uuid4().hex[:8]}.png'
+                        fig.savefig(plot_path, dpi=150, bbox_inches='tight')
+                        plt.close(fig)
+                except Exception as e:
+                    print(f"Ошибка при построении графика для сигнала: {e}")
+                    plot_path = None
+                
+                # Добавляем сигнал в список
+                signals.append({
+                    'time': candle_time,
+                    'entry': entry,
+                    'sl': sl,
+                    'tp': tp,
+                    'status': status,
+                    'timeframe': timeframe,
+                    'plot_path': plot_path
+                })
+        
+        return signals
+    
+    except Exception as e:
+        print(f"Ошибка при поиске сигналов за период: {e}")
+        return []
