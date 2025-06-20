@@ -119,154 +119,69 @@ def load_data(period="2d", interval="5m"):
 
 def generate_signal_and_plot():
     """
-    Генерирует сигнал для 5-минутного таймфрейма на основе паттерна 
-    (Judas Swing + DXY Raid) без использования ML-модели.
+    ВРЕМЕННО: Всегда возвращает сигнал для теста live-рассылки каждые 5 минут.
     """
-    status_message = "Неизвестная ошибка"
+    status_message = "Тестовый сигнал 5m (выдается всегда, для проверки live-рассылки)"
     try:
         data = load_data(period="3d", interval=TIMEFRAME_5M)
     except ValueError as e:
         status_message = f"Ошибка загрузки данных для 5м: {e}"
         print(status_message)
-        return None, None, None, None, None, None, TIMEFRAME_5M, status_message
+        return True, None, None, None, None, None, TIMEFRAME_5M, status_message
 
     if len(data) < LOOKBACK_PERIOD_5M + 2:
         status_message = f"Недостаточно данных для 5м сигнала: {len(data)} < {LOOKBACK_PERIOD_5M + 2}"
         print(status_message)
-        return None, None, None, None, None, None, TIMEFRAME_5M, status_message
+        return True, None, None, None, None, None, TIMEFRAME_5M, status_message
 
     last_candle = data.iloc[-2]
-    
-    start_index = len(data) - LOOKBACK_PERIOD_5M - 2
-    end_index = len(data) - 2
-    
-    # Проверка на выход за пределы диапазона
-    if start_index < 0 or end_index <= start_index:
-        print("Ошибка в индексах для поиска паттерна.")
-        return None, None, None, None, None, None, TIMEFRAME_5M, status_message
-        
-    eurusd_judas_swing = last_candle['High'] > data['High'].iloc[start_index:end_index].max()
-    dxy_raid = last_candle['DXY_Low'] < data['DXY_Low'].iloc[start_index:end_index].min()
-    
-    signal = False
-    entry, sl, tp, plot_path = None, None, None, None
-    
-    if eurusd_judas_swing and dxy_raid:
-        signal = True
-        status_message = "Найден сигнал на 5м!"
-        print(status_message)
-        entry = last_candle['Open'] # Вход по открытию следующей свечи
-        sl = entry * (1 + SL_RATIO_5M)
-        tp = entry * (1 - TP_RATIO_5M)
-        
-        try:
-            # Визуализация сигнала
-            candles = data.tail(60).copy()
-            
-            # Отладочная информация
-            print(f"Количество свечей для графика: {len(candles)}")
-            print(f"Временной диапазон: {candles.index[0]} - {candles.index[-1]}")
-            
-            # Проверка на дубликаты индексов
-            if candles.index.duplicated().any():
-                print("Обнаружены дубликаты в индексе, удаляем...")
-                candles = candles.loc[~candles.index.duplicated(keep='last')]
-            
-            if len(candles) < 10:
-                warnings.warn(f'Недостаточно данных для построения графика ({len(candles)} < 10)')
-                return signal, entry, sl, tp, last_candle, None, TIMEFRAME_5M, status_message
-            
-            # Подготовка данных для mplfinance
-            # 1. Сбрасываем индекс в обычный столбец
-            candles = candles.reset_index()
-            
-            # 2. Убеждаемся, что столбец с датой имеет правильное имя
-            date_col = next((col for col in ['Datetime', 'Date', 'index'] if col in candles.columns), None)
-            if not date_col:
-                print("ОШИБКА: Не найден столбец с датой/временем")
-                return signal, entry, sl, tp, last_candle, None, TIMEFRAME_5M, status_message
-            
-            # 3. Переименовываем столбец с датой в 'Date'
-            candles = candles.rename(columns={date_col: 'Date'})
-            
-            # 4. Преобразуем дату в формат без временной зоны
-            candles['Date'] = pd.to_datetime(candles['Date']).dt.tz_localize(None)
-            
-            # 5. Устанавливаем 'Date' как индекс
-            candles = candles.set_index('Date')
-            
-            # Проверяем наличие обязательных столбцов OHLC
-            required_columns = ['Open', 'High', 'Low', 'Close']
-            if not all(col in candles.columns for col in required_columns):
-                print(f"ОШИБКА: Отсутствуют обязательные столбцы: {[col for col in required_columns if col not in candles.columns]}")
-                return signal, entry, sl, tp, last_candle, None, TIMEFRAME_5M, status_message
-            
-            # Преобразуем числовые столбцы
-            for col in required_columns:
-                candles[col] = pd.to_numeric(candles[col], errors='coerce')
-            
-            # Удаляем строки с NaN в OHLC
-            candles = candles.dropna(subset=required_columns)
-            
-            if len(candles) < 10:
-                print(f"ОШИБКА: После очистки осталось мало данных: {len(candles)}")
-                return signal, entry, sl, tp, last_candle, None, TIMEFRAME_5M, status_message
-            
-            # Создаем линии для уровней входа, SL и TP
+    entry = last_candle['Open']
+    sl = entry * (1 + SL_RATIO_5M)
+    tp = entry * (1 - TP_RATIO_5M)
+    plot_path = None
+
+    # Визуализация сигнала (оставляем как есть)
+    try:
+        candles = data.tail(60).copy()
+        if candles.index.duplicated().any():
+            candles = candles.loc[~candles.index.duplicated(keep='last')]
+        candles = candles.reset_index()
+        date_col = next((col for col in ['Datetime', 'Date', 'index'] if col in candles.columns), None)
+        candles = candles.rename(columns={date_col: 'Date'})
+        candles['Date'] = pd.to_datetime(candles['Date']).dt.tz_localize(None)
+        candles = candles.set_index('Date')
+        required_columns = ['Open', 'High', 'Low', 'Close']
+        for col in required_columns:
+            candles[col] = pd.to_numeric(candles[col], errors='coerce')
+        candles = candles.dropna(subset=required_columns)
+        if len(candles) >= 10:
             apds = [
                 mpf.make_addplot([entry] * len(candles), type='line', color='blue', width=1, linestyle='--', panel=0),
                 mpf.make_addplot([sl] * len(candles), type='line', color='red', width=1, linestyle='--', panel=0),
                 mpf.make_addplot([tp] * len(candles), type='line', color='green', width=1, linestyle='--', panel=0)
             ]
-            
-            # Отмечаем Judas Swing и DXY Raid
-            high_level = data['High'].iloc[start_index:end_index].max()
-            low_level = data['DXY_Low'].iloc[start_index:end_index].min()
-            
-            # Создаем дополнительные графики для линий
-            apds.extend([
-                mpf.make_addplot([high_level] * len(candles), type='line', color='orange', width=0.8, linestyle=':', panel=0),
-                mpf.make_addplot(candles['DXY_Low'], type='line', color='purple', width=1.2, panel=1, ylabel='DXY')
-            ])
-
-            # Создаем график
             fig, axes = mpf.plot(
                 candles,
                 type='candle',
                 style=s,
-                title=f'SELL EURUSD ({TIMEFRAME_5M}) - Pattern Detected',
+                title=f'TEST SELL EURUSD ({TIMEFRAME_5M})',
                 ylabel='Price',
                 addplot=apds,
                 figsize=(12, 9),
                 returnfig=True,
-                panels=2,
-                panel_ratios=(3, 1) # Основной график больше, чем DXY
+                panels=1
             )
-            
-            # Добавляем маркер точки входа
             ax = axes[0]
             ax.scatter([len(candles)-1], [entry], color='blue', marker='v', s=120, label='Sell Entry')
-            
-            # Добавляем легенду
-            ax.legend(['Entry', 'Stop Loss', 'Take Profit', 'Judas Swing Level'], loc='upper left')
-            
-            # Сохраняем график
+            ax.legend(['Entry', 'Stop Loss', 'Take Profit'], loc='upper left')
             plot_path = 'signal_5m.png'
             fig.savefig(plot_path, dpi=150, bbox_inches='tight')
             plt.close(fig)
-            print(f"График для 5м сигнала успешно сохранен в {plot_path}")
-            
-        except Exception as e:
-            print(f"Ошибка при построении 5м графика: {e}")
-            import traceback
-            traceback.print_exc()
-            plot_path = None
+    except Exception as e:
+        print(f"Ошибка при построении тестового графика: {e}")
+        plot_path = None
 
-    if not signal:
-        status_message = "Активных 5м сигналов по паттерну нет."
-        print(status_message)
-        
-    return signal, entry, sl, tp, last_candle, plot_path, TIMEFRAME_5M, status_message
+    return True, entry, sl, tp, last_candle, plot_path, TIMEFRAME_5M, status_message
 
 def generate_signal_and_plot_30m():
     """
