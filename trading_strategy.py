@@ -184,7 +184,7 @@ def run_backtest(threshold=0.55):
     
     # 5. Сохранение результатов
     plot_filename = f"backtest_report_30m_{threshold}_{int(time.time())}.html"
-    bt.plot(filename=plot_filename, open_browser=False)
+    bt.plot(filename=plot_filename, open_browser=False, tools="wheel_zoom,box_zoom,reset,save")
     
     print("--- Бэктест (30m) завершен ---")
     return stats, plot_filename
@@ -211,7 +211,7 @@ def run_backtest_m5():
     
     # 4. Сохранение результатов
     plot_filename = f"backtest_report_5m_{int(time.time())}.html"
-    bt.plot(filename=plot_filename, open_browser=False)
+    bt.plot(filename=plot_filename, open_browser=False, tools="wheel_zoom,box_zoom,reset,save")
     
     print("--- Бэктест (5m) завершен ---")
     return stats, plot_filename
@@ -266,7 +266,7 @@ def run_full_backtest(threshold=0.55):
     
     # 5. Сохранение результатов
     plot_filename = f"full_backtest_report_{threshold}_{int(time.time())}.html"
-    bt.plot(filename=plot_filename, open_browser=False)
+    bt.plot(filename=plot_filename, open_browser=False, tools="wheel_zoom,box_zoom,reset,save")
     
     print("--- Полный бэктест завершен ---")
     return stats, plot_filename
