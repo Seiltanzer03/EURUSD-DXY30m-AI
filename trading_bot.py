@@ -510,14 +510,23 @@ async def run_check_and_report(chat_id):
         # Отправляем картинки для всех найденных сигналов
         for signal in signals_5m + signals_30m:
             if signal['plot_path'] and os.path.exists(signal['plot_path']):
-                with open(signal['plot_path'], 'rb') as f:
-                    await bot.send_photo(
-                        chat_id, 
-                        photo=f, 
-                        caption=f"Сигнал {signal['timeframe']} от {signal['time'].strftime('%Y-%m-%d %H:%M:%S')} - {signal['status']}"
-                    )
-                # Удаляем файл после отправки
-                os.remove(signal['plot_path'])
+                try:
+                    with open(signal['plot_path'], 'rb') as f:
+                        await bot.send_photo(
+                            chat_id, 
+                            photo=f, 
+                            caption=f"Сигнал {signal['timeframe']} от {signal['time'].strftime('%Y-%m-%d %H:%M:%S')} - {signal['status']}"
+                        )
+                    # Удаляем файл после отправки
+                    os.remove(signal['plot_path'])
+                except Exception as e:
+                    logging.error(f"Ошибка при отправке изображения {signal['plot_path']}: {e}", exc_info=True)
+            elif signal['plot_path']:
+                logging.error(f"Файл изображения {signal['plot_path']} не существует")
+                await bot.send_message(
+                    chat_id,
+                    f"⚠️ Не удалось создать график для сигнала {signal['timeframe']} от {signal['time'].strftime('%Y-%m-%d %H:%M:%S')}"
+                )
 
     except Exception as e:
         logging.error(f"Ошибка при выполнении ручной проверки для chat_id {chat_id}: {e}", exc_info=True)
@@ -656,10 +665,33 @@ def format_backtest_message(stats, timeframe, period_start, period_end):
     total_return = stats.get('Return [%]', stats.get('Equity Final [$]', '—'))
     max_drawdown = stats.get('Max. Drawdown [%]', stats.get('Max. Drawdown', '—'))
     n_trades = stats.get('# Trades', stats.get('Trades', '—'))
-    win_trades = stats.get('Win Trades', stats.get('Win Rate [%]', '—'))
-    loss_trades = stats.get('Loss Trades', stats.get('Loss Rate [%]', '—'))
+    
+    # Расчет количества прибыльных и убыточных сделок
+    win_trades = stats.get('Win Rate [%]', None)
+    if win_trades is not None:
+        # Если у нас есть процент прибыльных сделок, рассчитаем количество
+        win_count = int(round(float(n_trades) * float(win_trades) / 100))
+        loss_count = int(n_trades) - win_count
+    else:
+        # Если нет процента, попробуем получить прямые значения
+        win_count = stats.get('Win Trades', '—')
+        loss_count = stats.get('Loss Trades', '—')
+        
+        # Если у нас нет прямых значений, но есть общее количество сделок
+        if win_count == '—' and n_trades != '—':
+            # Попробуем использовать Win Rate [%] для расчета
+            win_rate = stats.get('Win Rate [%]', None)
+            if win_rate is not None:
+                win_count = int(round(float(n_trades) * float(win_rate) / 100))
+                loss_count = int(n_trades) - win_count
+    
+    # Получаем проценты выигрышных и проигрышных сделок
     win_pct = stats.get('Win Rate [%]', None)
-    loss_pct = stats.get('Loss Rate [%]', None)
+    if win_pct is not None:
+        loss_pct = 100 - float(win_pct)
+    else:
+        loss_pct = stats.get('Loss Rate [%]', None)
+    
     sharpe = stats.get('Sharpe Ratio', stats.get('Sharpe', '—'))
 
     # Форматируем проценты
@@ -679,8 +711,8 @@ def format_backtest_message(stats, timeframe, period_start, period_end):
 ▫️ Итоговая доходность: {fmt(total_return, True)}
 ▫️ Максимальная просадка: {fmt(max_drawdown, True)}
 ▫️ Количество сделок: {n_trades}
-▫️ Прибыльных сделок: {win_trades} ({fmt(win_pct, True) if win_pct else '—'})
-▫️ Убыточных сделок: {loss_trades} ({fmt(loss_pct, True) if loss_pct else '—'})
+▫️ Прибыльных сделок: {win_count} ({fmt(win_pct, True) if win_pct else '—'})
+▫️ Убыточных сделок: {loss_count} ({fmt(loss_pct, True) if loss_pct else '—'})
 ▫️ Коэффициент Шарпа: {fmt(sharpe)}
 
 ⏳ Период теста: {period_start} — {period_end}
