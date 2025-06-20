@@ -170,8 +170,7 @@ def generate_signal_and_plot():
                 ylabel='Price',
                 addplot=apds,
                 figsize=(12, 9),
-                returnfig=True,
-                panels=1
+                returnfig=True
             )
             ax = axes[0]
             ax.scatter([len(candles)-1], [entry], color='blue', marker='v', s=120, label='Sell Entry')
@@ -245,6 +244,63 @@ def generate_signal_and_plot_30m():
             entry = last_candle['Open']
             sl = entry * (1 + SL_RATIO_30M)
             tp = entry * (1 + TP_RATIO_30M)
+            
+            # Создаем график
+            try:
+                candles = data.tail(60).copy()
+                if candles.index.duplicated().any():
+                    candles = candles.loc[~candles.index.duplicated(keep='last')]
+                candles = candles.reset_index()
+                date_col = next((col for col in ['Datetime', 'Date', 'index'] if col in candles.columns), None)
+                candles = candles.rename(columns={date_col: 'Date'})
+                candles['Date'] = pd.to_datetime(candles['Date']).dt.tz_localize(None)
+                candles = candles.set_index('Date')
+                required_columns = ['Open', 'High', 'Low', 'Close']
+                for col in required_columns:
+                    candles[col] = pd.to_numeric(candles[col], errors='coerce')
+                candles = candles.dropna(subset=required_columns)
+                
+                if len(candles) >= 10:
+                    apds = [
+                        mpf.make_addplot([entry] * len(candles), type='line', color='blue', width=1, linestyle='--', panel=0),
+                        mpf.make_addplot([sl] * len(candles), type='line', color='red', width=1, linestyle='--', panel=0),
+                        mpf.make_addplot([tp] * len(candles), type='line', color='green', width=1, linestyle='--', panel=0)
+                    ]
+                    fig, axes = mpf.plot(
+                        candles,
+                        type='candle',
+                        style=s,
+                        title=f'SELL EURUSD ({TIMEFRAME_30M})',
+                        ylabel='Price',
+                        addplot=apds,
+                        figsize=(12, 9),
+                        returnfig=True
+                    )
+                    ax = axes[0]
+                    ax.scatter([len(candles)-1], [entry], color='blue', marker='v', s=120, label='Sell Entry')
+                    ax.legend(['Entry', 'Stop Loss', 'Take Profit'], loc='upper left')
+                    plot_path = 'signal_30m.png'
+                    fig.savefig(plot_path, dpi=150, bbox_inches='tight')
+                    plt.close(fig)
+            except Exception as e:
+                print(f"Ошибка при построении графика для 30м сигнала: {e}")
+                plot_path = None
+                
+                # Создаем простой график, если не удалось построить сложный
+                try:
+                    plt.figure(figsize=(10, 6))
+                    plt.title(f'SELL EURUSD ({TIMEFRAME_30M})')
+                    plt.plot(data.index[-30:], data['Close'].iloc[-30:], label='Close')
+                    plt.axhline(entry, color='blue', linestyle='--', label='Entry')
+                    plt.axhline(sl, color='red', linestyle='--', label='Stop Loss')
+                    plt.axhline(tp, color='green', linestyle='--', label='Take Profit')
+                    plt.legend()
+                    plot_path = 'signal_30m.png'
+                    plt.savefig(plot_path, dpi=150, bbox_inches='tight')
+                    plt.close()
+                except Exception as simple_e:
+                    print(f"Не удалось создать даже простой график для 30м: {simple_e}")
+                    plot_path = None
         else:
             status_message = f"Паттерн 30м найден, но не прошел ML-фильтр. Вероятность: {win_prob:.2%}"
             print(status_message)
@@ -381,6 +437,10 @@ def find_signals_in_period(minutes=60, timeframe='5m'):
                     end_idx = min(len(data), data.index.get_loc(candle_time) + 30)
                     chart_data = data.iloc[start_idx:end_idx].copy()
                     
+                    # Генерируем уникальное имя файла
+                    import uuid
+                    plot_path = f'signal_{timeframe}_{uuid.uuid4().hex[:8]}.png'
+                    
                     if len(chart_data) >= 10:
                         if chart_data.index.duplicated().any():
                             chart_data = chart_data.loc[~chart_data.index.duplicated(keep='last')]
@@ -416,8 +476,7 @@ def find_signals_in_period(minutes=60, timeframe='5m'):
                             ylabel='Price',
                             addplot=apds,
                             figsize=(12, 9),
-                            returnfig=True,
-                            panels=1
+                            returnfig=True
                         )
                         
                         ax = axes[0]
@@ -443,13 +502,23 @@ def find_signals_in_period(minutes=60, timeframe='5m'):
                         ax.legend(['Entry', 'Stop Loss', 'Take Profit'], loc='upper left')
                         
                         # Сохраняем график
-                        import uuid
-                        plot_path = f'signal_{timeframe}_{uuid.uuid4().hex[:8]}.png'
                         fig.savefig(plot_path, dpi=150, bbox_inches='tight')
                         plt.close(fig)
                 except Exception as e:
                     print(f"Ошибка при построении графика для сигнала: {e}")
-                    plot_path = None
+                    # Создаем простой график, если не удалось построить сложный
+                    try:
+                        plt.figure(figsize=(10, 6))
+                        plt.title(f'SELL EURUSD ({timeframe}) - {status}')
+                        plt.plot(data.index[-30:], data['Close'].iloc[-30:], label='Close')
+                        plt.axhline(entry, color='blue', linestyle='--', label='Entry')
+                        plt.axhline(sl, color='red', linestyle='--', label='Stop Loss')
+                        plt.axhline(tp, color='green', linestyle='--', label='Take Profit')
+                        plt.legend()
+                        plt.savefig(plot_path, dpi=150, bbox_inches='tight')
+                        plt.close()
+                    except Exception as simple_e:
+                        print(f"Не удалось создать даже простой график: {simple_e}")
                 
                 # Добавляем сигнал в список
                 signals.append({
