@@ -255,7 +255,7 @@ def run_backtest(threshold=0.55):
     
     # 5. Сохранение результатов
     plot_filename = f"backtest_report_30m_{threshold}_{int(time.time())}.html"
-    bt.plot(filename=plot_filename, open_browser=False)
+    bt.plot(filename=plot_filename, open_browser=False, resample=False)
     
     # Модифицируем HTML-файл, чтобы отключить инструменты Pan (x-axis) и Wheel Zoom (x-axis)
     disable_pan_tool_in_html(plot_filename)
@@ -285,7 +285,7 @@ def run_backtest_m5():
     
     # 4. Сохранение результатов
     plot_filename = f"backtest_report_5m_{int(time.time())}.html"
-    bt.plot(filename=plot_filename, open_browser=False)
+    bt.plot(filename=plot_filename, open_browser=False, resample=False)
     
     # Модифицируем HTML-файл, чтобы отключить инструменты Pan (x-axis) и Wheel Zoom (x-axis)
     disable_pan_tool_in_html(plot_filename)
@@ -343,7 +343,7 @@ def run_full_backtest(threshold=0.55):
     
     # 5. Сохранение результатов
     plot_filename = f"full_backtest_report_{threshold}_{int(time.time())}.html"
-    bt.plot(filename=plot_filename, open_browser=False)
+    bt.plot(filename=plot_filename, open_browser=False, resample=False)
     
     # Модифицируем HTML-файл, чтобы отключить инструменты Pan (x-axis) и Wheel Zoom (x-axis)
     disable_pan_tool_in_html(plot_filename)
