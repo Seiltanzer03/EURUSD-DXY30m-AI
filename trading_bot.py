@@ -12,7 +12,7 @@ import threading
 import logging
 import subprocess
 import re
-from signal_core import generate_signal_and_plot, generate_signal_and_plot_30m, find_signals_in_period
+from signal_core import generate_signal_and_plot, generate_signal_and_plot_30m, find_signals_in_period, find_last_signal
 import uuid
 import requests
 import time
@@ -461,55 +461,67 @@ def check_route():
 
 async def run_check_and_report(chat_id):
     """Запускает проверку сигналов и отправляет отчет конкретному пользователю."""
-    await bot.send_message(chat_id, "🔍 Начинаю ручную проверку сигналов...")
+    await bot.send_message(chat_id, "🔍 Начинаю проверку последних сигналов...")
     
     try:
-        # Ищем сигналы за последний час на обоих таймфреймах
-        signals_5m = find_signals_in_period(minutes=60, timeframe='5m')
-        signals_30m = find_signals_in_period(minutes=60, timeframe='30m')
+        # Ищем последние сигналы на обоих таймфреймах
+        last_signal_5m = find_last_signal(timeframe='5m')
+        last_signal_30m = find_last_signal(timeframe='30m')
         
-        # Если сигналов нет, проверяем текущий сигнал
-        if not signals_5m:
-            _, _, _, _, _, _, _, status_5m = generate_signal_and_plot()
-            report_5m = f"За последний час сигналов не найдено.\nТекущий статус: {status_5m}"
+        # Формируем отчеты для каждого таймфрейма
+        if last_signal_5m:
+            # Форматируем время и цены
+            entry_time = last_signal_5m['time'].strftime('%Y-%m-%d %H:%M:%S')
+            exit_time = last_signal_5m['exit_time'].strftime('%Y-%m-%d %H:%M:%S') if last_signal_5m['exit_time'] else "Не достигнут"
+            
+            report_5m = (
+                f"🔹 **Последний сигнал 5m:**\n"
+                f"   Время входа: {entry_time}\n"
+                f"   Цена входа: {last_signal_5m['entry']:.5f}\n"
+                f"   Стоп-лосс: {last_signal_5m['sl']:.5f}\n"
+                f"   Тейк-профит: {last_signal_5m['tp']:.5f}\n"
+                f"   Статус: {last_signal_5m['status']}\n"
+            )
+            
+            # Добавляем информацию о выходе, если сделка закрыта
+            if "закрыта" in last_signal_5m['status']:
+                report_5m += f"   Время выхода: {exit_time}\n"
+                report_5m += f"   Цена выхода: {last_signal_5m['exit_price']:.5f}\n"
         else:
-            # Формируем отчет по найденным сигналам
-            report_5m = "Сигналы за последний час (5m):\n\n"
-            for i, signal in enumerate(signals_5m):
-                report_5m += (
-                    f"{i+1}. Время: {signal['time'].strftime('%H:%M:%S')}\n"
-                    f"   Вход: {signal['entry']:.5f}\n"
-                    f"   Стоп: {signal['sl']:.5f}\n"
-                    f"   Тейк: {signal['tp']:.5f}\n"
-                    f"   Статус: {signal['status']}\n\n"
-                )
+            report_5m = "🔹 **5m:** Сигналов не найдено."
         
-        if not signals_30m:
-            _, _, _, _, _, _, _, status_30m = generate_signal_and_plot_30m()
-            report_30m = f"За последний час сигналов не найдено.\nТекущий статус: {status_30m}"
+        if last_signal_30m:
+            # Форматируем время и цены
+            entry_time = last_signal_30m['time'].strftime('%Y-%m-%d %H:%M:%S')
+            exit_time = last_signal_30m['exit_time'].strftime('%Y-%m-%d %H:%M:%S') if last_signal_30m['exit_time'] else "Не достигнут"
+            
+            report_30m = (
+                f"🔸 **Последний сигнал 30m:**\n"
+                f"   Время входа: {entry_time}\n"
+                f"   Цена входа: {last_signal_30m['entry']:.5f}\n"
+                f"   Стоп-лосс: {last_signal_30m['sl']:.5f}\n"
+                f"   Тейк-профит: {last_signal_30m['tp']:.5f}\n"
+                f"   Статус: {last_signal_30m['status']}\n"
+            )
+            
+            # Добавляем информацию о выходе, если сделка закрыта
+            if "закрыта" in last_signal_30m['status']:
+                report_30m += f"   Время выхода: {exit_time}\n"
+                report_30m += f"   Цена выхода: {last_signal_30m['exit_price']:.5f}\n"
         else:
-            # Формируем отчет по найденным сигналам
-            report_30m = "Сигналы за последний час (30m):\n\n"
-            for i, signal in enumerate(signals_30m):
-                report_30m += (
-                    f"{i+1}. Время: {signal['time'].strftime('%H:%M:%S')}\n"
-                    f"   Вход: {signal['entry']:.5f}\n"
-                    f"   Стоп: {signal['sl']:.5f}\n"
-                    f"   Тейк: {signal['tp']:.5f}\n"
-                    f"   Статус: {signal['status']}\n\n"
-                )
-
+            report_30m = "🔸 **30m:** Сигналов не найдено."
+        
         # Формируем и отправляем отчет
         report = (
-            f"Отчет о проверке:\n\n"
-            f"🔹 **5 минут:**\n{report_5m}\n\n"
-            f"🔸 **30 минут:**\n{report_30m}"
+            f"📊 Отчет о последних сигналах:\n\n"
+            f"{report_5m}\n\n"
+            f"{report_30m}"
         )
         await bot.send_message(chat_id, report, parse_mode='Markdown')
         
-        # Отправляем картинки для всех найденных сигналов
-        for signal in signals_5m + signals_30m:
-            if signal['plot_path'] and os.path.exists(signal['plot_path']):
+        # Отправляем картинки для найденных сигналов
+        for signal in [last_signal_5m, last_signal_30m]:
+            if signal and signal['plot_path'] and os.path.exists(signal['plot_path']):
                 try:
                     with open(signal['plot_path'], 'rb') as f:
                         await bot.send_photo(
@@ -521,7 +533,7 @@ async def run_check_and_report(chat_id):
                     os.remove(signal['plot_path'])
                 except Exception as e:
                     logging.error(f"Ошибка при отправке изображения {signal['plot_path']}: {e}", exc_info=True)
-            elif signal['plot_path']:
+            elif signal and signal['plot_path']:
                 logging.error(f"Файл изображения {signal['plot_path']} не существует")
                 await bot.send_message(
                     chat_id,
@@ -529,15 +541,15 @@ async def run_check_and_report(chat_id):
                 )
 
     except Exception as e:
-        logging.error(f"Ошибка при выполнении ручной проверки для chat_id {chat_id}: {e}", exc_info=True)
+        logging.error(f"Ошибка при выполнении проверки для chat_id {chat_id}: {e}", exc_info=True)
         await bot.send_message(chat_id, f"❌ Произошла ошибка во время проверки: {e}")
 
 async def generate_and_send_signals():
     """Генерирует, и если находит, рассылает все типы сигналов подписчикам."""
     try:
-        # Ищем сигналы за последние 5 минут (интервал между проверками)
-        signals_5m = find_signals_in_period(minutes=5, timeframe='5m')
-        signals_30m = find_signals_in_period(minutes=5, timeframe='30m')
+        # Ищем сигналы за последние 15 минут (интервал между проверками)
+        signals_5m = find_signals_in_period(minutes=15, timeframe='5m')
+        signals_30m = find_signals_in_period(minutes=15, timeframe='30m')
         
         # Если есть сигналы, отправляем их
         if signals_5m or signals_30m:
@@ -558,7 +570,7 @@ async def generate_and_send_signals():
                         signal['time'], signal['plot_path'], signal['timeframe']
                     )
         
-        # Если сигналов за последние 5 минут не найдено, проверяем текущий сигнал
+        # Если сигналов за последние 15 минут не найдено, проверяем текущий сигнал
         # (сохраняем текущее поведение для совместимости)
         if not signals_5m and not signals_30m:
             # 5-минутный таймфрейм
@@ -705,17 +717,26 @@ def format_backtest_message(stats, timeframe, period_start, period_end):
         except Exception:
             return str(val)
 
+    # Определяем реальный период бэктеста из данных
+    start_date = stats.get('Start', period_start)
+    end_date = stats.get('End', period_end)
+    
+    # Форматируем даты, если они есть
+    if isinstance(start_date, pd.Timestamp):
+        start_date = start_date.strftime('%Y-%m-%d')
+    if isinstance(end_date, pd.Timestamp):
+        end_date = end_date.strftime('%Y-%m-%d')
+
     msg = f"""
 📊 Результаты бэктеста ({timeframe}):
 
 ▫️ Итоговая доходность: {fmt(total_return, True)}
 ▫️ Максимальная просадка: {fmt(max_drawdown, True)}
 ▫️ Количество сделок: {n_trades}
-▫️ Прибыльных сделок: {win_count} ({fmt(win_pct, True) if win_pct else '—'})
-▫️ Убыточных сделок: {loss_count} ({fmt(loss_pct, True) if loss_pct else '—'})
+▫️ Винрейт: {fmt(win_pct, True) if win_pct else '—'}
 ▫️ Коэффициент Шарпа: {fmt(sharpe)}
 
-⏳ Период теста: {period_start} — {period_end}
+⏳ Период теста: {start_date} — {end_date}
 
 Подробный отчёт ниже.
 """
