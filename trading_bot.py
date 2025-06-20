@@ -12,7 +12,7 @@ import threading
 import logging
 import subprocess
 import re
-from signal_core import generate_signal_and_plot, generate_signal_and_plot_30m
+from signal_core import generate_signal_and_plot, generate_signal_and_plot_30m, find_signals_in_period
 import uuid
 import requests
 import time
@@ -464,17 +464,60 @@ async def run_check_and_report(chat_id):
     await bot.send_message(chat_id, "🔍 Начинаю ручную проверку сигналов...")
     
     try:
-        # Проверяем оба ТФ
-        _, _, _, _, _, _, _, status_5m = generate_signal_and_plot()
-        _, _, _, _, _, _, _, status_30m = generate_signal_and_plot_30m()
+        # Ищем сигналы за последний час на обоих таймфреймах
+        signals_5m = find_signals_in_period(minutes=60, timeframe='5m')
+        signals_30m = find_signals_in_period(minutes=60, timeframe='30m')
+        
+        # Если сигналов нет, проверяем текущий сигнал
+        if not signals_5m:
+            _, _, _, _, _, _, _, status_5m = generate_signal_and_plot()
+            report_5m = f"За последний час сигналов не найдено.\nТекущий статус: {status_5m}"
+        else:
+            # Формируем отчет по найденным сигналам
+            report_5m = "Сигналы за последний час (5m):\n\n"
+            for i, signal in enumerate(signals_5m):
+                report_5m += (
+                    f"{i+1}. Время: {signal['time'].strftime('%H:%M:%S')}\n"
+                    f"   Вход: {signal['entry']:.5f}\n"
+                    f"   Стоп: {signal['sl']:.5f}\n"
+                    f"   Тейк: {signal['tp']:.5f}\n"
+                    f"   Статус: {signal['status']}\n\n"
+                )
+        
+        if not signals_30m:
+            _, _, _, _, _, _, _, status_30m = generate_signal_and_plot_30m()
+            report_30m = f"За последний час сигналов не найдено.\nТекущий статус: {status_30m}"
+        else:
+            # Формируем отчет по найденным сигналам
+            report_30m = "Сигналы за последний час (30m):\n\n"
+            for i, signal in enumerate(signals_30m):
+                report_30m += (
+                    f"{i+1}. Время: {signal['time'].strftime('%H:%M:%S')}\n"
+                    f"   Вход: {signal['entry']:.5f}\n"
+                    f"   Стоп: {signal['sl']:.5f}\n"
+                    f"   Тейк: {signal['tp']:.5f}\n"
+                    f"   Статус: {signal['status']}\n\n"
+                )
 
         # Формируем и отправляем отчет
         report = (
             f"Отчет о проверке:\n\n"
-            f"🔹 **5 минут:** {status_5m}\n"
-            f"🔸 **30 минут:** {status_30m}"
+            f"🔹 **5 минут:**\n{report_5m}\n\n"
+            f"🔸 **30 минут:**\n{report_30m}"
         )
         await bot.send_message(chat_id, report, parse_mode='Markdown')
+        
+        # Отправляем картинки для всех найденных сигналов
+        for signal in signals_5m + signals_30m:
+            if signal['plot_path'] and os.path.exists(signal['plot_path']):
+                with open(signal['plot_path'], 'rb') as f:
+                    await bot.send_photo(
+                        chat_id, 
+                        photo=f, 
+                        caption=f"Сигнал {signal['timeframe']} от {signal['time'].strftime('%Y-%m-%d %H:%M:%S')} - {signal['status']}"
+                    )
+                # Удаляем файл после отправки
+                os.remove(signal['plot_path'])
 
     except Exception as e:
         logging.error(f"Ошибка при выполнении ручной проверки для chat_id {chat_id}: {e}", exc_info=True)
@@ -483,18 +526,44 @@ async def run_check_and_report(chat_id):
 async def generate_and_send_signals():
     """Генерирует, и если находит, рассылает все типы сигналов подписчикам."""
     try:
-        # 5-минутный таймфрейм
-        signal_5m, entry_5m, sl_5m, tp_5m, last_5m, image_path_5m, timeframe_5m, _ = generate_signal_and_plot()
+        # Ищем сигналы за последние 5 минут (интервал между проверками)
+        signals_5m = find_signals_in_period(minutes=5, timeframe='5m')
+        signals_30m = find_signals_in_period(minutes=5, timeframe='30m')
         
-        # 30-минутный таймфрейм
-        signal_30m, entry_30m, sl_30m, tp_30m, last_30m, image_path_30m, timeframe_30m, _ = generate_signal_and_plot_30m()
+        # Если есть сигналы, отправляем их
+        if signals_5m or signals_30m:
+            # Отправляем каждый сигнал отдельно
+            for signal in signals_5m:
+                if signal['time'] is not None and signal['entry'] is not None:
+                    await send_signals(
+                        True, signal['entry'], signal['sl'], signal['tp'], 
+                        signal['time'], signal['plot_path'], signal['timeframe'],
+                        None, None, None, None, None, None, None
+                    )
+            
+            for signal in signals_30m:
+                if signal['time'] is not None and signal['entry'] is not None:
+                    await send_signals(
+                        None, None, None, None, None, None, None,
+                        True, signal['entry'], signal['sl'], signal['tp'], 
+                        signal['time'], signal['plot_path'], signal['timeframe']
+                    )
+        
+        # Если сигналов за последние 5 минут не найдено, проверяем текущий сигнал
+        # (сохраняем текущее поведение для совместимости)
+        if not signals_5m and not signals_30m:
+            # 5-минутный таймфрейм
+            signal_5m, entry_5m, sl_5m, tp_5m, last_5m, image_path_5m, timeframe_5m, _ = generate_signal_and_plot()
+            
+            # 30-минутный таймфрейм
+            signal_30m, entry_30m, sl_30m, tp_30m, last_30m, image_path_30m, timeframe_30m, _ = generate_signal_and_plot_30m()
 
-        # Если есть хотя бы один сигнал, отправляем
-        if signal_5m or signal_30m:
-            await send_signals(
-                signal_5m, entry_5m, sl_5m, tp_5m, last_5m, image_path_5m, timeframe_5m,
-                signal_30m, entry_30m, sl_30m, tp_30m, last_30m, image_path_30m, timeframe_30m
-            )
+            # Если есть хотя бы один сигнал, отправляем
+            if signal_5m or signal_30m:
+                await send_signals(
+                    signal_5m, entry_5m, sl_5m, tp_5m, last_5m, image_path_5m, timeframe_5m,
+                    signal_30m, entry_30m, sl_30m, tp_30m, last_30m, image_path_30m, timeframe_30m
+                )
     except Exception as e:
         logging.error(f"Ошибка при генерации и отправке сигналов: {e}", exc_info=True)
 
@@ -541,10 +610,23 @@ async def send_signals(signal_5m, entry_5m, sl_5m, tp_5m, last_5m, image_path_5m
     for chat_id in subscribers:
         try:
             await bot.send_message(chat_id, final_message, parse_mode='Markdown')
+            
+            # Всегда отправляем картинки, если они есть
             for img_path in images_to_send:
-                with open(img_path, 'rb') as f:
-                    await bot.send_photo(chat_id, photo=f)
-                os.remove(img_path) # Удаляем после отправки
+                try:
+                    with open(img_path, 'rb') as f:
+                        await bot.send_photo(chat_id, photo=f)
+                except Exception as img_error:
+                    logging.error(f"Не удалось отправить изображение {img_path} подписчику {chat_id}: {img_error}")
+            
+            # Удаляем изображения после отправки всем подписчикам
+            for img_path in images_to_send:
+                try:
+                    if os.path.exists(img_path):
+                        os.remove(img_path)
+                except Exception as del_error:
+                    logging.error(f"Не удалось удалить файл {img_path}: {del_error}")
+                    
         except Exception as e:
             logging.error(f"Не удалось отправить сигнал подписчику {chat_id}: {e}")
 
