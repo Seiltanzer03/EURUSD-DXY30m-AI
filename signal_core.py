@@ -601,8 +601,8 @@ def find_last_signal(timeframe='5m'):
     """
     print(f"Поиск последнего сигнала на таймфрейме {timeframe}")
     
-    # Загружаем больше данных для поиска последнего сигнала
-    load_period = "7d" if timeframe == TIMEFRAME_30M else "3d"
+    # Загружаем данные только за последние несколько дней для ускорения
+    load_period = "3d" if timeframe == TIMEFRAME_30M else "1d"
     
     try:
         # Загружаем данные
@@ -625,8 +625,13 @@ def find_last_signal(timeframe='5m'):
         # Список для хранения найденных сигналов
         signals = []
         
-        # Проходим по всем свечам, кроме последней (текущей)
-        for i in range(len(data) - 1):
+        # Ограничиваем количество проверяемых свечей для ускорения
+        # Проверяем только последние N свечей
+        max_candles_to_check = 100 if timeframe == TIMEFRAME_5M else 50
+        candles_to_check = min(len(data) - 1, max_candles_to_check)
+        
+        # Проходим по последним свечам в обратном порядке (от новых к старым)
+        for i in range(len(data) - 2, max(0, len(data) - 2 - candles_to_check), -1):
             candle = data.iloc[i]
             candle_time = candle.name
             
@@ -845,6 +850,10 @@ def find_last_signal(timeframe='5m'):
                     'exit_time': exit_time,
                     'exit_price': exit_price
                 })
+                
+                # Как только нашли первый сигнал, возвращаем его (т.к. мы идем от новых к старым)
+                # Это позволит не обрабатывать все свечи
+                return signals[0]
         
         # Возвращаем самый последний сигнал
         if signals:
