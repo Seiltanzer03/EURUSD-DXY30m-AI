@@ -450,15 +450,19 @@ def find_signals_in_period(minutes=60, timeframe='5m'):
                 # Создаем график для сигнала
                 plot_path = None
                 try:
-                    # Берем больше свечей до сигнала (50 свечей до входа)
-                    start_idx = max(0, data.index.get_loc(candle_time) - 50)
+                    # Берем свечи до сигнала, но ограничиваем количество
+                    # Для 5m - максимум 30 свечей до входа, для 30m - максимум 20 свечей
+                    max_candles_before = 30 if timeframe == TIMEFRAME_5M else 20
+                    start_idx = max(0, data.index.get_loc(candle_time) - max_candles_before)
                     
                     # Если сделка закрыта, показываем до точки выхода + 5 свечей
                     if exit_time is not None:
                         end_idx = min(len(data), data.index.get_loc(exit_time) + 5)
                     else:
-                        # Если сделка активна, показываем все свечи до текущего момента
-                        end_idx = len(data)
+                        # Если сделка активна, показываем свечи после входа, но не все
+                        # Ограничиваем максимальное количество свечей после входа
+                        max_candles_after = 30 if timeframe == TIMEFRAME_5M else 20
+                        end_idx = min(len(data), data.index.get_loc(candle_time) + max_candles_after)
                     
                     chart_data = data.iloc[start_idx:end_idx].copy()
                     
@@ -496,7 +500,7 @@ def find_signals_in_period(minutes=60, timeframe='5m'):
                         title = f'SELL EURUSD ({timeframe}) - {status}'
                         
                         try:
-                            # Используем исходный размер графика
+                            # Используем исходный размер графика и добавляем warn_too_much_data
                             fig, axes = mpf.plot(
                                 chart_data,
                                 type='candle',
@@ -504,7 +508,8 @@ def find_signals_in_period(minutes=60, timeframe='5m'):
                                 title=title,
                                 ylabel='Price',
                                 addplot=apds,
-                                figsize=(12, 9),  # Возвращаем исходный размер
+                                figsize=(12, 9),
+                                warn_too_much_data=len(chart_data) + 100,  # Отключаем предупреждение
                                 returnfig=True
                             )
                             
@@ -538,7 +543,8 @@ def find_signals_in_period(minutes=60, timeframe='5m'):
                                 title=title,
                                 ylabel='Price',
                                 addplot=apds,
-                                figsize=(12, 9),  # Возвращаем исходный размер
+                                figsize=(12, 9),
+                                warn_too_much_data=len(chart_data) + 100,  # Отключаем предупреждение
                                 returnfig=True
                             )
                             fig.savefig(plot_path, dpi=150, bbox_inches='tight')
@@ -548,9 +554,13 @@ def find_signals_in_period(minutes=60, timeframe='5m'):
                     print(f"Ошибка при построении графика для сигнала: {e}")
                     # Создаем простой график, если не удалось построить сложный
                     try:
-                        plt.figure(figsize=(12, 9))  # Возвращаем исходный размер
+                        plt.figure(figsize=(12, 9))
                         plt.title(f'SELL EURUSD ({timeframe}) - {status}')
-                        plt.plot(data.index[-50:], data['Close'].iloc[-50:], label='Close')
+                        # Ограничиваем количество точек на линейном графике
+                        max_points = 50
+                        end_idx = len(data)
+                        start_idx = max(0, end_idx - max_points)
+                        plt.plot(data.index[start_idx:end_idx], data['Close'].iloc[start_idx:end_idx], label='Close')
                         plt.axhline(entry, color='blue', linestyle='--', label='Entry')
                         plt.axhline(sl, color='red', linestyle='--', label='Stop Loss')
                         plt.axhline(tp, color='green', linestyle='--', label='Take Profit')
@@ -703,15 +713,19 @@ def find_last_signal(timeframe='5m'):
                 # Создаем график для сигнала
                 plot_path = None
                 try:
-                    # Берем больше свечей до сигнала (50 свечей до входа)
-                    start_idx = max(0, data.index.get_loc(candle_time) - 50)
+                    # Берем свечи до сигнала, но ограничиваем количество
+                    # Для 5m - максимум 30 свечей до входа, для 30m - максимум 20 свечей
+                    max_candles_before = 30 if timeframe == TIMEFRAME_5M else 20
+                    start_idx = max(0, data.index.get_loc(candle_time) - max_candles_before)
                     
                     # Если сделка закрыта, показываем до точки выхода + 5 свечей
                     if exit_time is not None:
                         end_idx = min(len(data), data.index.get_loc(exit_time) + 5)
                     else:
-                        # Если сделка активна, показываем все свечи до текущего момента
-                        end_idx = len(data)
+                        # Если сделка активна, показываем свечи после входа, но не все
+                        # Ограничиваем максимальное количество свечей после входа
+                        max_candles_after = 30 if timeframe == TIMEFRAME_5M else 20
+                        end_idx = min(len(data), data.index.get_loc(candle_time) + max_candles_after)
                     
                     chart_data = data.iloc[start_idx:end_idx].copy()
                     
@@ -749,7 +763,7 @@ def find_last_signal(timeframe='5m'):
                         title = f'SELL EURUSD ({timeframe}) - {status}'
                         
                         try:
-                            # Используем исходный размер графика
+                            # Используем исходный размер графика и добавляем warn_too_much_data
                             fig, axes = mpf.plot(
                                 chart_data,
                                 type='candle',
@@ -757,7 +771,8 @@ def find_last_signal(timeframe='5m'):
                                 title=title,
                                 ylabel='Price',
                                 addplot=apds,
-                                figsize=(12, 9),  # Возвращаем исходный размер
+                                figsize=(12, 9),
+                                warn_too_much_data=len(chart_data) + 100,  # Отключаем предупреждение
                                 returnfig=True
                             )
                             
@@ -791,7 +806,8 @@ def find_last_signal(timeframe='5m'):
                                 title=title,
                                 ylabel='Price',
                                 addplot=apds,
-                                figsize=(12, 9),  # Возвращаем исходный размер
+                                figsize=(12, 9),
+                                warn_too_much_data=len(chart_data) + 100,  # Отключаем предупреждение
                                 returnfig=True
                             )
                             fig.savefig(plot_path, dpi=150, bbox_inches='tight')
@@ -801,9 +817,13 @@ def find_last_signal(timeframe='5m'):
                     print(f"Ошибка при построении графика для сигнала: {e}")
                     # Создаем простой график, если не удалось построить сложный
                     try:
-                        plt.figure(figsize=(12, 9))  # Возвращаем исходный размер
+                        plt.figure(figsize=(12, 9))
                         plt.title(f'SELL EURUSD ({timeframe}) - {status}')
-                        plt.plot(data.index[-50:], data['Close'].iloc[-50:], label='Close')
+                        # Ограничиваем количество точек на линейном графике
+                        max_points = 50
+                        end_idx = len(data)
+                        start_idx = max(0, end_idx - max_points)
+                        plt.plot(data.index[start_idx:end_idx], data['Close'].iloc[start_idx:end_idx], label='Close')
                         plt.axhline(entry, color='blue', linestyle='--', label='Entry')
                         plt.axhline(sl, color='red', linestyle='--', label='Stop Loss')
                         plt.axhline(tp, color='green', linestyle='--', label='Take Profit')
