@@ -160,7 +160,7 @@ class SMCStrategy(Strategy):
             self.signal_to_trade = 0
 
 class SMCStrategy5m(Strategy):
-    """Стратегия для 5-минутного таймфрейма на основе паттерна."""
+    """Стратегия для 5-минутного таймфрейма: сигнал на каждом баре (тестовый режим)."""
     lookback_period = 20
     sl_ratio = 0.002  # Уменьшенный SL
     tp_ratio = 0.005  # Уменьшенный TP
@@ -173,34 +173,18 @@ class SMCStrategy5m(Strategy):
         if self.position:
             return
 
-        current_index = len(self.data.Close) - 1
-        if current_index < self.lookback_period:
+        # Всегда выдаём сигнал на каждом баре (каждые 5 минут)
+        entry_price = self.data.Open[-1]
+        sl_price = entry_price * (1 + self.sl_ratio)
+        tp_price = entry_price * (1 - self.tp_ratio)
+
+        if not (np.isfinite(entry_price) and np.isfinite(sl_price) and np.isfinite(tp_price)):
             return
 
-        start_index = current_index - self.lookback_period
-        
-        eurusd_judas_swing = self.data.High[-1] > self.data.High[start_index:current_index].max()
-        dxy_raid = self.data.DXY_Low[-1] < self.data.DXY_Low[start_index:current_index].min()
-        
-        if dxy_raid and eurusd_judas_swing:
-            self.signal_to_trade = -1  # Сигнал на продажу без ML
-        else:
-            self.signal_to_trade = 0
-
-        if self.signal_to_trade == -1 and not self.position:
-            entry_price = self.data.Open[-1] 
-            sl_price = entry_price * (1 + self.sl_ratio)
-            tp_price = entry_price * (1 - self.tp_ratio)
-
-            if not (np.isfinite(entry_price) and np.isfinite(sl_price) and np.isfinite(tp_price)):
-                self.signal_to_trade = 0
-                return
-
-            try:
-                self.sell(sl=sl_price, tp=tp_price)
-            except Exception:
-                pass 
-            self.signal_to_trade = 0
+        try:
+            self.sell(sl=sl_price, tp=tp_price)
+        except Exception:
+            pass
 
 def load_data_from_yfinance(ticker, period="7d", interval="30m"):
     """Загружает данные из Yahoo Finance и обрабатывает возможный MultiIndex."""
