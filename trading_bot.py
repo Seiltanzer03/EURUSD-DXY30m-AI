@@ -464,9 +464,33 @@ async def run_check_and_report(chat_id):
     await bot.send_message(chat_id, "🔍 Начинаю проверку последних сигналов...")
     
     try:
-        # Ищем последние сигналы на обоих таймфреймах
-        last_signal_5m = find_last_signal(timeframe='5m')
-        last_signal_30m = find_last_signal(timeframe='30m')
+        # Устанавливаем таймаут для поиска сигналов
+        timeout_seconds = 30
+        
+        # Ищем последние сигналы на обоих таймфреймах с таймаутом
+        try:
+            # Создаем задачу для поиска сигнала 5m
+            task_5m = asyncio.create_task(asyncio.to_thread(find_last_signal, timeframe='5m'))
+            # Ждем выполнения с таймаутом
+            last_signal_5m = await asyncio.wait_for(task_5m, timeout=timeout_seconds)
+        except asyncio.TimeoutError:
+            logging.warning(f"Таймаут при поиске сигнала 5m (превышено {timeout_seconds} сек)")
+            last_signal_5m = None
+        except Exception as e:
+            logging.error(f"Ошибка при поиске сигнала 5m: {e}")
+            last_signal_5m = None
+        
+        try:
+            # Создаем задачу для поиска сигнала 30m
+            task_30m = asyncio.create_task(asyncio.to_thread(find_last_signal, timeframe='30m'))
+            # Ждем выполнения с таймаутом
+            last_signal_30m = await asyncio.wait_for(task_30m, timeout=timeout_seconds)
+        except asyncio.TimeoutError:
+            logging.warning(f"Таймаут при поиске сигнала 30m (превышено {timeout_seconds} сек)")
+            last_signal_30m = None
+        except Exception as e:
+            logging.error(f"Ошибка при поиске сигнала 30m: {e}")
+            last_signal_30m = None
         
         # Формируем отчеты для каждого таймфрейма
         if last_signal_5m:
@@ -488,7 +512,7 @@ async def run_check_and_report(chat_id):
                 report_5m += f"   Время выхода: {exit_time}\n"
                 report_5m += f"   Цена выхода: {last_signal_5m['exit_price']:.5f}\n"
         else:
-            report_5m = "🔹 **5m:** Сигналов не найдено."
+            report_5m = "🔹 **5m:** Сигналов не найдено или превышен таймаут поиска."
         
         if last_signal_30m:
             # Форматируем время и цены
@@ -509,7 +533,7 @@ async def run_check_and_report(chat_id):
                 report_30m += f"   Время выхода: {exit_time}\n"
                 report_30m += f"   Цена выхода: {last_signal_30m['exit_price']:.5f}\n"
         else:
-            report_30m = "🔸 **30m:** Сигналов не найдено."
+            report_30m = "🔸 **30m:** Сигналов не найдено или превышен таймаут поиска."
         
         # Формируем и отправляем отчет
         report = (
@@ -520,7 +544,7 @@ async def run_check_and_report(chat_id):
         await bot.send_message(chat_id, report, parse_mode='Markdown')
         
         # Отправляем картинки для найденных сигналов
-        for signal in [last_signal_5m, last_signal_30m]:
+        for signal in [s for s in [last_signal_5m, last_signal_30m] if s]:
             if signal and signal['plot_path'] and os.path.exists(signal['plot_path']):
                 try:
                     with open(signal['plot_path'], 'rb') as f:
