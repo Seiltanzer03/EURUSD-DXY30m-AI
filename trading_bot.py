@@ -234,7 +234,8 @@ async def run_backtest_async(chat_id, threshold):
         await bot.send_message(chat_id, f"✅ Запускаю бэктест с фильтром {threshold}. Это может занять несколько минут...")
         stats, plot_file = await asyncio.to_thread(run_backtest, threshold)
         if plot_file:
-            await bot.send_message(chat_id, f"📊 Результаты бэктеста:\n\n<pre>{stats}</pre>", parse_mode='HTML')
+            msg = format_backtest_message(stats, '30m', '2024-01-01', '2024-06-01')
+            await bot.send_message(chat_id, msg)
             with open(plot_file, 'r', encoding='utf-8') as f:
                 html = f.read()
             # Формируем токен с указанием ID пользователя
@@ -267,7 +268,8 @@ async def run_full_backtest_async(chat_id, threshold):
         await bot.send_message(chat_id, f"✅ Запускаю полный бэктест по историческим данным с фильтром {threshold}. Это может занять несколько минут...")
         stats, plot_file = await asyncio.to_thread(run_full_backtest, threshold)
         if plot_file:
-            await bot.send_message(chat_id, f"📊 Результаты полного бэктеста:\n\n<pre>{stats}</pre>", parse_mode='HTML')
+            msg = format_backtest_message(stats, '30m', '2024-01-01', '2024-06-01')
+            await bot.send_message(chat_id, msg)
             with open(plot_file, 'r', encoding='utf-8') as f:
                 html = f.read()
             # Формируем токен с указанием ID пользователя
@@ -300,7 +302,8 @@ async def run_backtest_m5_async(chat_id):
         await bot.send_message(chat_id, f"✅ Запускаю бэктест 5-минутной стратегии за 59 дней. Это может занять несколько минут...")
         stats, plot_file = await asyncio.to_thread(run_backtest_m5)
         if plot_file:
-            await bot.send_message(chat_id, f"📊 Результаты 5-минутного бэктеста:\n\n<pre>{stats}</pre>", parse_mode='HTML')
+            msg = format_backtest_message(stats, '5m', '2024-01-01', '2024-06-01')
+            await bot.send_message(chat_id, msg)
             with open(plot_file, 'r', encoding='utf-8') as f:
                 html = f.read()
             # Формируем токен с указанием ID пользователя
@@ -562,6 +565,47 @@ def save_report():
 @app.route('/')
 def index():
     return "Trading Bot is running."
+
+def format_backtest_message(stats, timeframe, period_start, period_end):
+    """
+    Формирует красивое текстовое сообщение для пользователя по результатам бэктеста.
+    """
+    # Извлекаем нужные значения из stats
+    total_return = stats.get('Return [%]', stats.get('Equity Final [$]', '—'))
+    max_drawdown = stats.get('Max. Drawdown [%]', stats.get('Max. Drawdown', '—'))
+    n_trades = stats.get('# Trades', stats.get('Trades', '—'))
+    win_trades = stats.get('Win Trades', stats.get('Win Rate [%]', '—'))
+    loss_trades = stats.get('Loss Trades', stats.get('Loss Rate [%]', '—'))
+    win_pct = stats.get('Win Rate [%]', None)
+    loss_pct = stats.get('Loss Rate [%]', None)
+    sharpe = stats.get('Sharpe Ratio', stats.get('Sharpe', '—'))
+
+    # Форматируем проценты
+    def fmt(val, is_pct=False):
+        if val is None or val == '—':
+            return '—'
+        try:
+            if is_pct:
+                return f"{float(val):+.1f}%"
+            return str(val)
+        except Exception:
+            return str(val)
+
+    msg = f"""
+📊 Результаты бэктеста ({timeframe}):
+
+▫️ Итоговая доходность: {fmt(total_return, True)}
+▫️ Максимальная просадка: {fmt(max_drawdown, True)}
+▫️ Количество сделок: {n_trades}
+▫️ Прибыльных сделок: {win_trades} ({fmt(win_pct, True) if win_pct else '—'})
+▫️ Убыточных сделок: {loss_trades} ({fmt(loss_pct, True) if loss_pct else '—'})
+▫️ Коэффициент Шарпа: {fmt(sharpe)}
+
+⏳ Период теста: {period_start} — {period_end}
+
+Подробный отчёт ниже.
+"""
+    return msg
 
 if __name__ == "__main__":
     # Локальный запуск для отладки. На Render будет использоваться gunicorn.
