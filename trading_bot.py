@@ -436,11 +436,15 @@ async def handle_update(update):
                 # Импортируем функцию для получения статистики демо-счета
                 from demo_account import get_demo_account_summary, update_open_trades, generate_account_html
                 
+                logging.info("Импорт функций демо-счета выполнен успешно")
+                
                 # Обновляем открытые сделки перед показом статистики
                 update_open_trades()
+                logging.info("Открытые сделки обновлены")
                 
                 # Получаем статистику
                 stats = get_demo_account_summary()
+                logging.info(f"Получена статистика демо-счета: {stats}")
                 
                 # Формируем сообщение со статистикой
                 message = (
@@ -453,6 +457,7 @@ async def handle_update(update):
                     f"📤 Открытых позиций: {stats['open_positions']}\n\n"
                     f"Нажмите на игру ниже, чтобы открыть полный отчет демо-счета:"
                 )
+                logging.info("Сообщение с статистикой сформировано")
                 
                 # Отправляем сообщение с информацией
                 await bot.send_message(
@@ -460,9 +465,11 @@ async def handle_update(update):
                     text=message, 
                     parse_mode='Markdown'
                 )
+                logging.info("Сообщение с статистикой отправлено")
                 
                 # Генерируем HTML для демо-счета
                 html = generate_account_html()
+                logging.info("HTML для демо-счета сгенерирован")
                 
                 # Формируем токен с указанием ID пользователя
                 token = f"{chat_id}_{str(uuid.uuid4())}"
@@ -472,17 +479,21 @@ async def handle_update(update):
                 
                 # Отправляем отчет на сервер игры
                 send_report_to_game_server(token, html)
+                logging.info("Отчет отправлен на сервер игры")
                 
-                # Отправляем игру
+                # Отправляем игру - используем правильное название игры live_account
                 try:
                     await bot.send_game(
                         chat_id=chat_id, 
-                        game_short_name='live_account',
+                        game_short_name='live_account',  # Используем игру live_account для демо-счета
                         start_parameter=token
                     )
-                except (TypeError, ValueError) as e:
+                    logging.info("Игра live_account с отчетом отправлена пользователю")
+                except Exception as e:
                     logging.error(f"Ошибка при отправке игры: {e}", exc_info=True)
+                    # Пробуем отправить без start_parameter
                     await bot.send_game(chat_id=chat_id, game_short_name='live_account')
+                    logging.info("Игра live_account отправлена пользователю (резервный метод)")
                 
             except Exception as e:
                 logging.error(f"Ошибка при обработке команды /trading_live: {e}", exc_info=True)
