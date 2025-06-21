@@ -17,6 +17,7 @@ import uuid
 import requests
 import time
 from telegram_game_handler import handle_game_callback_query, send_report_to_game_server
+import concurrent.futures
 
 # --- 1. Конфигурация и Инициализация ---
 
@@ -465,7 +466,7 @@ async def run_check_and_report(chat_id):
     
     try:
         # Устанавливаем таймаут для поиска сигналов
-        timeout_seconds = 30
+        timeout_seconds = 300
         
         # Ищем последние сигналы на обоих таймфреймах с таймаутом
         try:
