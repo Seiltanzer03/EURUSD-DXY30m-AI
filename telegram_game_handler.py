@@ -16,7 +16,12 @@ async def handle_game_callback_query(bot, update, reports):
     - True если callback_query был для игры и обработан
     - False в противном случае
     """
-    if not update.callback_query or update.callback_query.game_short_name != 'backtest_report':
+    if not update.callback_query:
+        return False
+        
+    # Проверяем, что это запрос для одной из наших игр
+    game_short_name = update.callback_query.game_short_name
+    if game_short_name not in ['backtest_report', 'live_account']:
         return False
         
     callback_query_id = update.callback_query.id
@@ -52,7 +57,7 @@ async def handle_game_callback_query(bot, update, reports):
             logging.warning(f"Не найдено отчетов для пользователя {chat_id}!")
             await bot.answer_callback_query(
                 callback_query_id=callback_query_id,
-                text="Отчет не найден. Пожалуйста, запустите бэктест еще раз.",
+                text="Отчет не найден. Пожалуйста, запустите команду еще раз.",
                 show_alert=True
             )
             return True
@@ -66,7 +71,7 @@ async def handle_game_callback_query(bot, update, reports):
         html, _ = reports[token]
         send_report_to_game_server(token, html)
         
-        logging.info(f"Обрабатываю callback_query игры для пользователя {user_id}, токен: {token}, URL: {game_url}")
+        logging.info(f"Обрабатываю callback_query игры '{game_short_name}' для пользователя {user_id}, токен: {token}, URL: {game_url}")
         
         # Отправляем URL игры в ответ на callback_query
         try:
@@ -81,7 +86,7 @@ async def handle_game_callback_query(bot, update, reports):
         logging.warning(f"Токен {token} не найден в словаре отчетов")
         await bot.answer_callback_query(
             callback_query_id=callback_query_id,
-            text="Отчет не найден. Пожалуйста, запустите бэктест еще раз.",
+            text="Отчет не найден. Пожалуйста, запустите команду еще раз.",
             show_alert=True
         )
     return True
