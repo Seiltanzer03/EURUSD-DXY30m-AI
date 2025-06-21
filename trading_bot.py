@@ -64,8 +64,24 @@ def cleanup_reports():
             del reports[token]
         time.sleep(60)
 
+# Функция для обновления открытых сделок на демо-счете
+def update_demo_account_trades():
+    while True:
+        try:
+            from demo_account import update_open_trades
+            update_open_trades()
+            logging.info("Демо-счет успешно обновлен")
+        except Exception as e:
+            logging.error(f"Ошибка при обновлении демо-счета: {e}")
+        
+        # Обновляем каждые 5 минут
+        time.sleep(300)
+
 # Запуск очистки отчётов в фоне
 threading.Thread(target=cleanup_reports, daemon=True).start()
+
+# Запуск обновления демо-счета в фоне
+threading.Thread(target=update_demo_account_trades, daemon=True).start()
 
 @app.route('/game_report')
 def game_report():
@@ -348,7 +364,7 @@ async def handle_update(update):
     """Асинхронно обрабатывает входящие сообщения."""
     try:
         # Проверяем наличие callback_query (для обработки игровых запросов)
-        if update.callback_query and update.callback_query.game_short_name == 'backtest_report':
+        if update.callback_query and update.callback_query.game_short_name in ['backtest_report', 'live_account']:
             # Вызываем функцию обработки игровых callback_query
             return await handle_game_callback_query(bot, update, reports)
         
@@ -413,6 +429,67 @@ async def handle_update(update):
             except (ValueError, IndexError):
                 logging.error("Failed to parse /fullbacktest command.", exc_info=True)
                 await bot.send_message(chat_id, "Неверный формат. Используйте: /fullbacktest [уровень_фильтра], например: /fullbacktest 0.55")
+        elif text == '/trading_live':
+            logging.info(f"'/trading_live' command recognized for chat_id {chat_id}.")
+            
+            try:
+                # Импортируем функцию для получения статистики демо-счета
+                from demo_account import get_demo_account_summary, update_open_trades, generate_account_html
+                
+                # Обновляем открытые сделки перед показом статистики
+                update_open_trades()
+                
+                # Получаем статистику
+                stats = get_demo_account_summary()
+                
+                # Формируем сообщение со статистикой
+                message = (
+                    f"📈 *Демо-счет торговых сигналов*\n\n"
+                    f"💰 Баланс: ${stats['balance']:.2f}\n"
+                    f"💵 Средства: ${stats['equity']:.2f}\n"
+                    f"🔄 Всего сделок: {stats['total_trades']}\n"
+                    f"✅ Винрейт: {stats['win_rate']:.2%}\n"
+                    f"📊 Прибыль/Убыток: ${stats['net_profit']:.2f}\n"
+                    f"📤 Открытых позиций: {stats['open_positions']}\n\n"
+                    f"Нажмите на игру ниже, чтобы открыть полный отчет демо-счета:"
+                )
+                
+                # Отправляем сообщение с информацией
+                await bot.send_message(
+                    chat_id=chat_id, 
+                    text=message, 
+                    parse_mode='Markdown'
+                )
+                
+                # Генерируем HTML для демо-счета
+                html = generate_account_html()
+                
+                # Формируем токен с указанием ID пользователя
+                token = f"{chat_id}_{str(uuid.uuid4())}"
+                expire_time = time.time() + 1800  # 30 минут жизни
+                reports[token] = (html, expire_time)
+                logging.info(f"Сохраняю отчёт демо-счета для chat_id={chat_id}, token={token}")
+                
+                # Отправляем отчет на сервер игры
+                send_report_to_game_server(token, html)
+                
+                # Отправляем игру
+                try:
+                    await bot.send_game(
+                        chat_id=chat_id, 
+                        game_short_name='live_account',
+                        start_parameter=token
+                    )
+                except (TypeError, ValueError) as e:
+                    logging.error(f"Ошибка при отправке игры: {e}", exc_info=True)
+                    await bot.send_game(chat_id=chat_id, game_short_name='live_account')
+                
+            except Exception as e:
+                logging.error(f"Ошибка при обработке команды /trading_live: {e}", exc_info=True)
+                await bot.send_message(
+                    chat_id=chat_id,
+                    text=f"Произошла ошибка при загрузке данных демо-счета: {e}"
+                )
         else:
             logging.info(f"Command '{text}' not recognized by any handler.")
 
@@ -615,15 +692,15 @@ async def generate_and_send_signals():
 
 async def send_signals(signal_5m, entry_5m, sl_5m, tp_5m, last_5m, image_path_5m, timeframe_5m,
                        signal_30m, entry_30m, sl_30m, tp_30m, last_30m, image_path_30m, timeframe_30m):
-    """Асинхронно рассылает сигналы подписчикам."""
+    """Асинхронно рассылает сигналы подписчикам и добавляет их на демо-счет."""
     subscribers = get_subscribers()
     if not subscribers:
         logging.info("Сигнал(ы) есть, но подписчиков нет.")
-        return
-
+    
     message_parts = []
     images_to_send = []
 
+    # Обрабатываем сигнал 5m
     if signal_5m:
         message_5m = (
             f"🚨 СИГНАЛ НА ПРОДАЖУ (SELL) EUR/USD ({timeframe_5m}) 🚨\n\n"
@@ -635,7 +712,16 @@ async def send_signals(signal_5m, entry_5m, sl_5m, tp_5m, last_5m, image_path_5m
         message_parts.append(message_5m)
         if image_path_5m and os.path.exists(image_path_5m):
             images_to_send.append(image_path_5m)
+            
+        # Добавляем сигнал 5m на демо-счет
+        try:
+            from demo_account import process_new_signal
+            process_new_signal(-1, entry_5m, sl_5m, tp_5m, timeframe_5m)
+            logging.info(f"Сигнал {timeframe_5m} добавлен на демо-счет")
+        except Exception as e:
+            logging.error(f"Ошибка при добавлении сигнала {timeframe_5m} на демо-счет: {e}")
 
+    # Обрабатываем сигнал 30m
     if signal_30m:
         message_30m = (
             f"🚨 СИГНАЛ НА ПРОДАЖУ (SELL) EUR/USD ({timeframe_30m}) 🚨\n\n"
@@ -647,12 +733,21 @@ async def send_signals(signal_5m, entry_5m, sl_5m, tp_5m, last_5m, image_path_5m
         message_parts.append(message_30m)
         if image_path_30m and os.path.exists(image_path_30m):
             images_to_send.append(image_path_30m)
+            
+        # Добавляем сигнал 30m на демо-счет
+        try:
+            from demo_account import process_new_signal
+            process_new_signal(-1, entry_30m, sl_30m, tp_30m, timeframe_30m)
+            logging.info(f"Сигнал {timeframe_30m} добавлен на демо-счет")
+        except Exception as e:
+            logging.error(f"Ошибка при добавлении сигнала {timeframe_30m} на демо-счет: {e}")
 
     if not message_parts:
         return
 
     final_message = "\n\n---\n\n".join(message_parts)
 
+    # Рассылаем сообщения подписчикам
     for chat_id in subscribers:
         try:
             await bot.send_message(chat_id, final_message, parse_mode='Markdown')
@@ -665,16 +760,16 @@ async def send_signals(signal_5m, entry_5m, sl_5m, tp_5m, last_5m, image_path_5m
                 except Exception as img_error:
                     logging.error(f"Не удалось отправить изображение {img_path} подписчику {chat_id}: {img_error}")
             
-            # Удаляем изображения после отправки всем подписчикам
-            for img_path in images_to_send:
-                try:
-                    if os.path.exists(img_path):
-                        os.remove(img_path)
-                except Exception as del_error:
-                    logging.error(f"Не удалось удалить файл {img_path}: {del_error}")
-                    
         except Exception as e:
             logging.error(f"Не удалось отправить сигнал подписчику {chat_id}: {e}")
+    
+    # Удаляем изображения после отправки всем подписчикам
+    for img_path in images_to_send:
+        try:
+            if os.path.exists(img_path):
+                os.remove(img_path)
+        except Exception as del_error:
+            logging.error(f"Не удалось удалить файл {img_path}: {del_error}")
 
 @app.route('/save_report', methods=['POST'])
 def save_report():
@@ -692,7 +787,106 @@ def save_report():
 
 @app.route('/')
 def index():
-    return "Trading Bot is running."
+    """Главная страница сервера."""
+    server_url = os.environ.get('SERVER_URL', request.url_root.rstrip('/'))
+    return f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Trading Bot Server</title>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <style>
+            body {{ font-family: Arial, sans-serif; margin: 40px; }}
+            .container {{ max-width: 800px; margin: 0 auto; }}
+            .link-box {{ padding: 15px; margin: 10px 0; background-color: #f0f0f0; border-radius: 5px; }}
+            a {{ color: #4285F4; text-decoration: none; }}
+            a:hover {{ text-decoration: underline; }}
+            h1 {{ color: #333; }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>Trading Bot Server</h1>
+            <p>Сервер успешно запущен и работает.</p>
+            
+            <div class="link-box">
+                <h3>Демо-счет</h3>
+                <p>Просмотр состояния демо-счета с историей сделок и статистикой.</p>
+                <a href="{server_url}/demo_account">Открыть демо-счет</a>
+            </div>
+            
+            <div class="link-box">
+                <h3>Инициализация демо-счета</h3>
+                <p>Заполнение демо-счета историческими сигналами из CSV файлов.</p>
+                <a href="{server_url}/init_demo">Инициализировать демо-счет</a>
+            </div>
+        </div>
+    </body>
+    </html>
+    """
+
+@app.route('/demo_account')
+def demo_account_route():
+    """Маршрут для отображения демо-счета."""
+    try:
+        from demo_account import generate_account_html, update_open_trades
+        
+        # Обновляем открытые сделки перед отображением
+        update_open_trades()
+        
+        # Генерируем HTML для отображения
+        html = generate_account_html()
+        return Response(html, mimetype='text/html')
+    except Exception as e:
+        logging.error(f"Ошибка при отображении демо-счета: {e}")
+        return f"Ошибка при отображении демо-счета: {e}", 500
+
+@app.route('/init_demo')
+def init_demo_route():
+    """Маршрут для инициализации демо-счета историческими данными."""
+    try:
+        from demo_account import initialize_historical_signals
+        
+        # Запускаем инициализацию
+        result = initialize_historical_signals()
+        
+        if result:
+            message = "Демо-счет успешно инициализирован историческими данными!"
+        else:
+            message = "Инициализация не выполнена. Возможно, демо-счет уже содержит данные."
+        
+        return f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Инициализация демо-счета</title>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <style>
+                body {{ font-family: Arial, sans-serif; margin: 40px; }}
+                .container {{ max-width: 800px; margin: 0 auto; }}
+                .message {{ padding: 20px; background-color: #f0f0f0; border-radius: 5px; }}
+                .success {{ color: green; }}
+                .warning {{ color: orange; }}
+                .button {{ display: inline-block; padding: 10px 20px; background-color: #4285F4; 
+                          color: white; text-decoration: none; border-radius: 4px; margin-top: 20px; }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <h1>Инициализация демо-счета</h1>
+                <div class="message {'success' if result else 'warning'}">
+                    {message}
+                </div>
+                <a href="/demo_account" class="button">Перейти к демо-счету</a>
+            </div>
+        </body>
+        </html>
+        """
+    except Exception as e:
+        logging.error(f"Ошибка при инициализации демо-счета: {e}")
+        return f"Ошибка при инициализации демо-счета: {e}", 500
 
 def format_backtest_message(stats, timeframe, period_start, period_end):
     """
@@ -767,6 +961,47 @@ def format_backtest_message(stats, timeframe, period_start, period_end):
 """
     return msg
 
+def run_background_loop():
+    """Запускает фоновые задачи в отдельном потоке."""
+    logging.info("Запуск фоновых задач...")
+    
+    # Запускаем задачу обновления демо-счета
+    update_demo_task = threading.Thread(target=update_demo_account_trades_loop, daemon=True)
+    update_demo_task.start()
+    
+    # Запускаем задачу очистки отчетов
+    cleanup_task = threading.Thread(target=cleanup_reports_loop, daemon=True)
+    cleanup_task.start()
+
+def update_demo_account_trades_loop():
+    """Периодически обновляет открытые сделки на демо-счете."""
+    while True:
+        try:
+            update_demo_account_trades()
+        except Exception as e:
+            logging.error(f"Ошибка в update_demo_account_trades_loop: {e}")
+        time.sleep(300)  # Обновляем каждые 5 минут
+
+def cleanup_reports_loop():
+    """Периодически очищает старые отчеты."""
+    while True:
+        try:
+            cleanup_reports()
+        except Exception as e:
+            logging.error(f"Ошибка в cleanup_reports_loop: {e}")
+        time.sleep(3600)  # Очищаем каждый час
+
+# --- 3. Запуск приложения ---
 if __name__ == "__main__":
-    # Локальный запуск для отладки. На Render будет использоваться gunicorn.
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000))) 
+    # Инициализируем демо-счет историческими данными
+    try:
+        from demo_account import initialize_historical_signals
+        initialize_historical_signals()
+    except Exception as e:
+        logging.error(f"Ошибка при инициализации демо-счета: {e}")
+    
+    # Запускаем фоновые задачи
+    threading.Thread(target=run_background_loop, daemon=True).start()
+    
+    # Запускаем веб-сервер
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080))) 
