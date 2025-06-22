@@ -603,7 +603,7 @@ def find_last_signal(timeframe='5m'):
     
     # Загружаем данные только за последние несколько дней для ускорения
     # Для 30m увеличиваем период до 30 дней, чтобы находить более старые сигналы
-    load_period = "30d" if timeframe == TIMEFRAME_30M else "1d"
+    load_period = "30d" if timeframe == TIMEFRAME_30M else "3d"
     
     try:
         # Загружаем данные
