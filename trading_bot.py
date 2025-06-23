@@ -625,9 +625,18 @@ async def send_signals(signal_5m, entry_5m, sl_5m, tp_5m, last_5m, image_path_5m
     images_to_send = []
 
     if signal_5m:
+        # Корректно определяем время сетапа
+        if last_5m is not None:
+            setup_time_5m = last_5m.name if hasattr(last_5m, 'name') else last_5m
+            try:
+                setup_time_5m_str = setup_time_5m.strftime('%Y-%m-%d %H:%M')
+            except Exception:
+                setup_time_5m_str = str(setup_time_5m)
+        else:
+            setup_time_5m_str = "—"
         message_5m = (
             f"🚨 СИГНАЛ НА ПРОДАЖУ (SELL) EUR/USD ({timeframe_5m}) 🚨\n\n"
-            f"Время сетапа (UTC): `{last_5m.name.strftime('%Y-%m-%d %H:%M')}`\n"
+            f"Время сетапа (UTC): `{setup_time_5m_str}`\n"
             f"Вход: {entry_5m:.5f}\n"
             f"Стоп: {sl_5m:.5f}\n"
             f"Тейк: {tp_5m:.5f}"
@@ -637,9 +646,18 @@ async def send_signals(signal_5m, entry_5m, sl_5m, tp_5m, last_5m, image_path_5m
             images_to_send.append(image_path_5m)
 
     if signal_30m:
+        # Корректно определяем время сетапа
+        if last_30m is not None:
+            setup_time_30m = last_30m.name if hasattr(last_30m, 'name') else last_30m
+            try:
+                setup_time_30m_str = setup_time_30m.strftime('%Y-%m-%d %H:%M')
+            except Exception:
+                setup_time_30m_str = str(setup_time_30m)
+        else:
+            setup_time_30m_str = "—"
         message_30m = (
             f"🚨 СИГНАЛ НА ПРОДАЖУ (SELL) EUR/USD ({timeframe_30m}) 🚨\n\n"
-            f"Время сетапа (UTC): `{last_30m.name.strftime('%Y-%m-%d %H:%M')}`\n"
+            f"Время сетапа (UTC): `{setup_time_30m_str}`\n"
             f"Вход: {entry_30m:.5f}\n"
             f"Стоп: {sl_30m:.5f}\n"
             f"Тейк: {tp_30m:.5f}"
