@@ -210,14 +210,14 @@ def run_backtest(threshold=0.55):
     bt = Backtest(data, SMCStrategy, cash=10000, commission=.0002, margin=0.05)
     stats = bt.run()
     
-    # 5. Сохранение результатов
+    # 5. Сохранение результатов с ресамплингом до 2-часовых свечей для отображения
     plot_filename = f"backtest_report_30m_{threshold}_{int(time.time())}.html"
-    bt.plot(filename=plot_filename, open_browser=False, resample=False)
+    bt.plot(filename=plot_filename, open_browser=False, resample='2H')
     
     # Модифицируем HTML-файл, чтобы отключить инструменты Pan (x-axis) и Wheel Zoom (x-axis)
     disable_pan_tool_in_html(plot_filename)
     
-    print("--- Бэктест (30m) завершен ---")
+    print("--- Бэктест (30m) завершен, отображение в режиме 2H ---")
     return stats, plot_filename
 
 def run_full_backtest(threshold=0.55):
@@ -268,14 +268,14 @@ def run_full_backtest(threshold=0.55):
     bt = Backtest(data, SMCStrategy, cash=10000, commission=.0002, margin=0.05)
     stats = bt.run()
     
-    # 5. Сохранение результатов
+    # 5. Сохранение результатов с ресамплингом до 2-часовых свечей для отображения
     plot_filename = f"full_backtest_report_{threshold}_{int(time.time())}.html"
-    bt.plot(filename=plot_filename, open_browser=False, resample=False)
+    bt.plot(filename=plot_filename, open_browser=False, resample='2H')
     
     # Модифицируем HTML-файл, чтобы отключить инструменты Pan (x-axis) и Wheel Zoom (x-axis)
     disable_pan_tool_in_html(plot_filename)
     
-    print("--- Полный бэктест завершен ---")
+    print("--- Полный бэктест завершен, отображение в режиме 2H ---")
     return stats, plot_filename
 
 # Этот блок больше не нужен, так как запуск будет из бота
