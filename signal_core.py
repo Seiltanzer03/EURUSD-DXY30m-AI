@@ -33,12 +33,8 @@ s = mpf.make_mpf_style(
 )
 
 # --- Константы для таймфреймов и параметров ---
-TIMEFRAME_5M = '5m'
 TIMEFRAME_30M = '30m'
-LOOKBACK_PERIOD_5M = 5
 LOOKBACK_PERIOD_30M = 34  # ~17 часов
-SL_RATIO_5M = 0.003
-TP_RATIO_5M = 0.008
 SL_RATIO_30M = 0.004
 TP_RATIO_30M = 0.01
 MODEL_FILE = 'ml_model_final_fix.joblib'
@@ -49,7 +45,7 @@ def flatten_multiindex_columns(df):
         df.columns = df.columns.get_level_values(0)
     return df
 
-def load_data(period="2d", interval="5m"):
+def load_data(period="2d", interval="30m"):
     # 1. Загрузка данных
     eurusd = yf.download('EURUSD=X', period=period, interval=interval, auto_adjust=True)
     dxy = yf.download('DX-Y.NYB', period=period, interval=interval, auto_adjust=True)
@@ -119,71 +115,6 @@ def load_data(period="2d", interval="5m"):
     
     return data
 
-def generate_signal_and_plot():
-    """
-    ВРЕМЕННО: Всегда возвращает сигнал для теста live-рассылки каждые 5 минут.
-    """
-    status_message = "Тестовый сигнал 5m (выдается всегда, для проверки live-рассылки)"
-    try:
-        data = load_data(period="3d", interval=TIMEFRAME_5M)
-    except ValueError as e:
-        status_message = f"Ошибка загрузки данных для 5м: {e}"
-        print(status_message)
-        return True, None, None, None, None, None, TIMEFRAME_5M, status_message
-
-    if len(data) < LOOKBACK_PERIOD_5M + 2:
-        status_message = f"Недостаточно данных для 5м сигнала: {len(data)} < {LOOKBACK_PERIOD_5M + 2}"
-        print(status_message)
-        return True, None, None, None, None, None, TIMEFRAME_5M, status_message
-
-    last_candle = data.iloc[-2]
-    entry = last_candle['Open']
-    sl = entry * (1 + SL_RATIO_5M)
-    tp = entry * (1 - TP_RATIO_5M)
-    plot_path = None
-
-    # Визуализация сигнала (оставляем как есть)
-    try:
-        candles = data.tail(60).copy()
-        if candles.index.duplicated().any():
-            candles = candles.loc[~candles.index.duplicated(keep='last')]
-        candles = candles.reset_index()
-        date_col = next((col for col in ['Datetime', 'Date', 'index'] if col in candles.columns), None)
-        candles = candles.rename(columns={date_col: 'Date'})
-        candles['Date'] = pd.to_datetime(candles['Date']).dt.tz_localize(None)
-        candles = candles.set_index('Date')
-        required_columns = ['Open', 'High', 'Low', 'Close']
-        for col in required_columns:
-            candles[col] = pd.to_numeric(candles[col], errors='coerce')
-        candles = candles.dropna(subset=required_columns)
-        if len(candles) >= 10:
-            apds = [
-                mpf.make_addplot([entry] * len(candles), type='line', color='blue', width=1, linestyle='--', panel=0),
-                mpf.make_addplot([sl] * len(candles), type='line', color='red', width=1, linestyle='--', panel=0),
-                mpf.make_addplot([tp] * len(candles), type='line', color='green', width=1, linestyle='--', panel=0)
-            ]
-            fig, axes = mpf.plot(
-                candles,
-                type='candle',
-                style=s,
-                title=f'TEST SELL EURUSD ({TIMEFRAME_5M})',
-                ylabel='Price',
-                addplot=apds,
-                figsize=(12, 9),
-                returnfig=True
-            )
-            ax = axes[0]
-            ax.scatter([len(candles)-1], [entry], color='blue', marker='v', s=120, label='Sell Entry')
-            ax.legend(['Entry', 'Stop Loss', 'Take Profit'], loc='upper left')
-            plot_path = 'signal_5m.png'
-            fig.savefig(plot_path, dpi=150, bbox_inches='tight')
-            plt.close(fig)
-    except Exception as e:
-        print(f"Ошибка при построении тестового графика: {e}")
-        plot_path = None
-
-    return True, entry, sl, tp, last_candle, plot_path, TIMEFRAME_5M, status_message
-
 def generate_signal_and_plot_30m():
     """
     Генерирует сигнал для 30-минутного таймфрейма на основе паттерна
@@ -243,7 +174,7 @@ def generate_signal_and_plot_30m():
             signal = True
             entry = last_candle['Open']
             sl = entry * (1 + SL_RATIO_30M)
-            tp = entry * (1 + TP_RATIO_30M)
+            tp = entry * (1 - TP_RATIO_30M)
             
             # Создаем график
             try:
@@ -312,13 +243,13 @@ def generate_signal_and_plot_30m():
 
     return signal, entry, sl, tp, last_candle, plot_path, TIMEFRAME_30M, status_message
 
-def find_signals_in_period(minutes=60, timeframe='5m'):
+def find_signals_in_period(minutes=60, timeframe='30m'):
     """
     Ищет сигналы за указанный период времени (в минутах) и проверяет, достигли ли они SL или TP.
     
     Args:
         minutes (int): Период в минутах для поиска сигналов
-        timeframe (str): Таймфрейм для анализа ('5m' или '30m')
+        timeframe (str): Таймфрейм для анализа ('30m')
     
     Returns:
         list: Список найденных сигналов с информацией о статусе (активен/закрыт по SL/TP)
@@ -336,15 +267,10 @@ def find_signals_in_period(minutes=60, timeframe='5m'):
             print(f"Недостаточно данных для анализа: {len(data)} < 20")
             return []
         
-        # Определяем параметры в зависимости от таймфрейма
-        if timeframe == TIMEFRAME_5M:
-            lookback_period = LOOKBACK_PERIOD_5M
-            sl_ratio = SL_RATIO_5M
-            tp_ratio = TP_RATIO_5M
-        else:  # 30m
-            lookback_period = LOOKBACK_PERIOD_30M
-            sl_ratio = SL_RATIO_30M
-            tp_ratio = TP_RATIO_30M
+        # Определяем параметры для 30m таймфрейма
+        lookback_period = LOOKBACK_PERIOD_30M
+        sl_ratio = SL_RATIO_30M
+        tp_ratio = TP_RATIO_30M
         
         # Определяем временной диапазон для поиска сигналов
         now = pd.Timestamp.now(tz='UTC')
@@ -366,54 +292,39 @@ def find_signals_in_period(minutes=60, timeframe='5m'):
             candle = period_data.iloc[i]
             candle_time = candle.name
             
-            # Проверяем наличие сигнала для данной свечи
+            # Получаем индекс свечи в полном наборе данных
+            candle_index = data.index.get_loc(candle_time)
+            if candle_index < lookback_period:
+                continue  # Пропускаем, если недостаточно исторических данных
+            
+            # Проверяем время UTC для 30m сигнала
+            current_hour = candle_time.hour
+            if not (13 <= current_hour <= 17):
+                continue  # Пропускаем, если вне торгового времени
+            
+            start_index = candle_index - lookback_period
+            end_index = candle_index
+            
+            # Проверяем паттерн
+            eurusd_judas_swing = candle['High'] > data['High'].iloc[start_index:end_index].max()
+            dxy_raid = candle['DXY_Low'] < data['DXY_Low'].iloc[start_index:end_index].min()
+            
             signal = False
             
-            # Для таймфрейма 5m используем тот же алгоритм, что и в generate_signal_and_plot
-            if timeframe == TIMEFRAME_5M:
-                # Получаем индекс свечи в полном наборе данных
-                candle_index = data.index.get_loc(candle_time)
-                if candle_index < lookback_period:
-                    continue  # Пропускаем, если недостаточно исторических данных
+            if eurusd_judas_swing and dxy_raid:
+                # Проверяем ML-фильтр
+                features = [candle[col] for col in ['RSI', 'MACD', 'MACD_hist', 'MACD_signal', 'ATR']]
+                if any(np.isnan(features)):
+                    continue
                 
-                # Используем тестовый сигнал для 5m (можно заменить на реальную логику)
-                signal = True
-                entry = candle['Open']
-                sl = entry * (1 + sl_ratio)
-                tp = entry * (1 - tp_ratio)
-            else:
-                # Для 30m применяем логику с паттерном и ML-фильтром
-                # Получаем данные для анализа паттерна
-                candle_index = data.index.get_loc(candle_time)
-                if candle_index < lookback_period:
-                    continue  # Пропускаем, если недостаточно исторических данных
+                model = joblib.load(MODEL_FILE)
+                win_prob = model.predict_proba([features])[0][1]
                 
-                # Проверяем время UTC для 30m сигнала
-                current_hour = candle_time.hour
-                if not (13 <= current_hour <= 17):
-                    continue  # Пропускаем, если вне торгового времени
-                
-                start_index = candle_index - lookback_period
-                end_index = candle_index
-                
-                # Проверяем паттерн
-                eurusd_judas_swing = candle['High'] > data['High'].iloc[start_index:end_index].max()
-                dxy_raid = candle['DXY_Low'] < data['DXY_Low'].iloc[start_index:end_index].min()
-                
-                if eurusd_judas_swing and dxy_raid:
-                    # Проверяем ML-фильтр
-                    features = [candle[col] for col in ['RSI', 'MACD', 'MACD_hist', 'MACD_signal', 'ATR']]
-                    if any(np.isnan(features)):
-                        continue
-                    
-                    model = joblib.load(MODEL_FILE)
-                    win_prob = model.predict_proba([features])[0][1]
-                    
-                    if win_prob >= PREDICTION_THRESHOLD:
-                        signal = True
-                        entry = candle['Open']
-                        sl = entry * (1 + sl_ratio)
-                        tp = entry * (1 - tp_ratio)
+                if win_prob >= PREDICTION_THRESHOLD:
+                    signal = True
+                    entry = candle['Open']
+                    sl = entry * (1 + sl_ratio)
+                    tp = entry * (1 - tp_ratio)
             
             # Если сигнал найден, анализируем его результат
             if signal:
@@ -451,8 +362,7 @@ def find_signals_in_period(minutes=60, timeframe='5m'):
                 plot_path = None
                 try:
                     # Берем свечи до сигнала, но ограничиваем количество
-                    # Для 5m - максимум 30 свечей до входа, для 30m - максимум 20 свечей
-                    max_candles_before = 30 if timeframe == TIMEFRAME_5M else 20
+                    max_candles_before = 20
                     start_idx = max(0, data.index.get_loc(candle_time) - max_candles_before)
                     
                     # Если сделка закрыта, показываем до точки выхода + 5 свечей
@@ -461,7 +371,7 @@ def find_signals_in_period(minutes=60, timeframe='5m'):
                     else:
                         # Если сделка активна, показываем свечи после входа, но не все
                         # Ограничиваем максимальное количество свечей после входа
-                        max_candles_after = 30 if timeframe == TIMEFRAME_5M else 20
+                        max_candles_after = 20
                         end_idx = min(len(data), data.index.get_loc(candle_time) + max_candles_after)
                     
                     chart_data = data.iloc[start_idx:end_idx].copy()
@@ -589,12 +499,12 @@ def find_signals_in_period(minutes=60, timeframe='5m'):
         print(f"Ошибка при поиске сигналов за период: {e}")
         return []
 
-def find_last_signal(timeframe='5m'):
+def find_last_signal(timeframe='30m'):
     """
     Ищет последний сигнал без ограничения по времени и проверяет его статус.
     
     Args:
-        timeframe (str): Таймфрейм для анализа ('5m' или '30m')
+        timeframe (str): Таймфрейм для анализа ('30m')
     
     Returns:
         dict: Информация о последнем найденном сигнале или None, если сигнал не найден
@@ -602,8 +512,7 @@ def find_last_signal(timeframe='5m'):
     print(f"Поиск последнего сигнала на таймфрейме {timeframe}")
     
     # Загружаем данные только за последние несколько дней для ускорения
-    # Для 30m увеличиваем период до 30 дней, чтобы находить более старые сигналы
-    load_period = "30d" if timeframe == TIMEFRAME_30M else "3d"
+    load_period = "30d"
     
     try:
         # Загружаем данные
@@ -613,23 +522,17 @@ def find_last_signal(timeframe='5m'):
             print(f"Недостаточно данных для анализа: {len(data)} < 20")
             return None
         
-        # Определяем параметры в зависимости от таймфрейма
-        if timeframe == TIMEFRAME_5M:
-            lookback_period = LOOKBACK_PERIOD_5M
-            sl_ratio = SL_RATIO_5M
-            tp_ratio = TP_RATIO_5M
-        else:  # 30m
-            lookback_period = LOOKBACK_PERIOD_30M
-            sl_ratio = SL_RATIO_30M
-            tp_ratio = TP_RATIO_30M
+        # Определяем параметры для 30m таймфрейма
+        lookback_period = LOOKBACK_PERIOD_30M
+        sl_ratio = SL_RATIO_30M
+        tp_ratio = TP_RATIO_30M
         
         # Список для хранения найденных сигналов
         signals = []
         
         # Ограничиваем количество проверяемых свечей для ускорения
         # Проверяем только последние N свечей
-        # Для 30m увеличиваем количество проверяемых свечей
-        max_candles_to_check = 100 if timeframe == TIMEFRAME_5M else 300
+        max_candles_to_check = 300
         candles_to_check = min(len(data) - 1, max_candles_to_check)
         
         print(f"Проверка последних {candles_to_check} свечей из {len(data)} для таймфрейма {timeframe}")
@@ -642,50 +545,37 @@ def find_last_signal(timeframe='5m'):
             # Проверяем наличие сигнала для данной свечи
             signal = False
             
-            # Для таймфрейма 5m используем тот же алгоритм, что и в generate_signal_and_plot
-            if timeframe == TIMEFRAME_5M:
-                # Получаем индекс свечи в полном наборе данных
-                candle_index = i
-                if candle_index < lookback_period:
-                    continue  # Пропускаем, если недостаточно исторических данных
+            # Получаем индекс свечи в полном наборе данных
+            candle_index = i
+            if candle_index < lookback_period:
+                continue  # Пропускаем, если недостаточно исторических данных
+            
+            # Проверяем время UTC для 30m сигнала
+            current_hour = candle_time.hour
+            if not (13 <= current_hour <= 17):
+                continue  # Пропускаем, если вне торгового времени
+            
+            start_index = candle_index - lookback_period
+            end_index = candle_index
+            
+            # Проверяем паттерн
+            eurusd_judas_swing = candle['High'] > data['High'].iloc[start_index:end_index].max()
+            dxy_raid = candle['DXY_Low'] < data['DXY_Low'].iloc[start_index:end_index].min()
+            
+            if eurusd_judas_swing and dxy_raid:
+                # Проверяем ML-фильтр
+                features = [candle[col] for col in ['RSI', 'MACD', 'MACD_hist', 'MACD_signal', 'ATR']]
+                if any(np.isnan(features)):
+                    continue
                 
-                # Используем тестовый сигнал для 5m (можно заменить на реальную логику)
-                signal = True
-                entry = candle['Open']
-                sl = entry * (1 + sl_ratio)
-                tp = entry * (1 - tp_ratio)
-            else:
-                # Для 30m применяем логику с паттерном и ML-фильтром
-                candle_index = i
-                if candle_index < lookback_period:
-                    continue  # Пропускаем, если недостаточно исторических данных
+                model = joblib.load(MODEL_FILE)
+                win_prob = model.predict_proba([features])[0][1]
                 
-                # Проверяем время UTC для 30m сигнала
-                current_hour = candle_time.hour
-                if not (13 <= current_hour <= 17):
-                    continue  # Пропускаем, если вне торгового времени
-                
-                start_index = candle_index - lookback_period
-                end_index = candle_index
-                
-                # Проверяем паттерн
-                eurusd_judas_swing = candle['High'] > data['High'].iloc[start_index:end_index].max()
-                dxy_raid = candle['DXY_Low'] < data['DXY_Low'].iloc[start_index:end_index].min()
-                
-                if eurusd_judas_swing and dxy_raid:
-                    # Проверяем ML-фильтр
-                    features = [candle[col] for col in ['RSI', 'MACD', 'MACD_hist', 'MACD_signal', 'ATR']]
-                    if any(np.isnan(features)):
-                        continue
-                    
-                    model = joblib.load(MODEL_FILE)
-                    win_prob = model.predict_proba([features])[0][1]
-                    
-                    if win_prob >= PREDICTION_THRESHOLD:
-                        signal = True
-                        entry = candle['Open']
-                        sl = entry * (1 + sl_ratio)
-                        tp = entry * (1 - tp_ratio)
+                if win_prob >= PREDICTION_THRESHOLD:
+                    signal = True
+                    entry = candle['Open']
+                    sl = entry * (1 + sl_ratio)
+                    tp = entry * (1 - tp_ratio)
             
             # Если сигнал найден, анализируем его результат
             if signal:
@@ -724,8 +614,7 @@ def find_last_signal(timeframe='5m'):
                 plot_path = None
                 try:
                     # Берем свечи до сигнала, но ограничиваем количество
-                    # Для 5m - максимум 30 свечей до входа, для 30m - максимум 20 свечей
-                    max_candles_before = 30 if timeframe == TIMEFRAME_5M else 20
+                    max_candles_before = 20
                     start_idx = max(0, data.index.get_loc(candle_time) - max_candles_before)
                     
                     # Если сделка закрыта, показываем до точки выхода + 5 свечей
@@ -734,7 +623,7 @@ def find_last_signal(timeframe='5m'):
                     else:
                         # Если сделка активна, показываем свечи после входа, но не все
                         # Ограничиваем максимальное количество свечей после входа
-                        max_candles_after = 30 if timeframe == TIMEFRAME_5M else 20
+                        max_candles_after = 20
                         end_idx = min(len(data), data.index.get_loc(candle_time) + max_candles_after)
                     
                     chart_data = data.iloc[start_idx:end_idx].copy()
