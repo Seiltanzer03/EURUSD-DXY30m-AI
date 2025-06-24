@@ -7,12 +7,12 @@ import yfinance as yf
 import telegram
 from flask import Flask, request, abort, Response
 import asyncio
-from trading_strategy import run_backtest, run_full_backtest, run_backtest_m5
+from trading_strategy import run_backtest, run_full_backtest
 import threading
 import logging
 import subprocess
 import re
-from signal_core import generate_signal_and_plot, generate_signal_and_plot_30m, find_signals_in_period, find_last_signal
+from signal_core import generate_signal_and_plot_30m, find_signals_in_period, find_last_signal
 import uuid
 import requests
 import time
@@ -297,39 +297,7 @@ async def run_full_backtest_async(chat_id, threshold):
         logging.error(f"Ошибка в run_full_backtest_async: {e}", exc_info=True)
         await bot.send_message(chat_id, f"❌ Критическая ошибка в задаче полного бэктеста: {e}")
 
-async def run_backtest_m5_async(chat_id):
-    logging.info(f"Executing run_backtest_m5_async for chat_id {chat_id}.")
-    try:
-        await bot.send_message(chat_id, f"✅ Запускаю бэктест 5-минутной стратегии за 59 дней. Это может занять несколько минут...")
-        stats, plot_file = await asyncio.to_thread(run_backtest_m5)
-        if plot_file:
-            msg = format_backtest_message(stats, '5m', '2024-01-01', '2024-06-01')
-            await bot.send_message(chat_id, msg)
-            with open(plot_file, 'r', encoding='utf-8') as f:
-                html = f.read()
-            # Формируем токен с указанием ID пользователя
-            token = f"{chat_id}_{str(uuid.uuid4())}"
-            expire_time = time.time() + 1800
-            reports[token] = (html, expire_time)
-            logging.info(f"Сохраняю 5m отчёт для chat_id={chat_id}, token={token}, файл={plot_file}")
-            
-            # Отправляем отчет на сервер игры
-            send_report_to_game_server(token, html)
-            
-            try:
-                await bot.send_game(
-                    chat_id=chat_id, 
-                    game_short_name='backtest_report',
-                    start_parameter=token
-                )
-            except (TypeError, ValueError):
-                await bot.send_game(chat_id=chat_id, game_short_name='backtest_report')
-            os.remove(plot_file)
-        else:
-            await bot.send_message(chat_id, f"❌ Ошибка во время 5-минутного бэктеста: {stats}")
-    except Exception as e:
-        logging.error(f"Ошибка в run_backtest_m5_async: {e}", exc_info=True)
-        await bot.send_message(chat_id, f"❌ Критическая ошибка в задаче 5-минутного бэктеста: {e}")
+# Функция удалена, т.к. убран 5m сетап
 
 # Вспомогательная функция для парсинга текста и пути к графику
 def parse_signal_output(output):
@@ -377,12 +345,7 @@ async def handle_update(update):
             task = asyncio.create_task(run_check_and_report(chat_id))
             background_tasks.add(task)
             task.add_done_callback(background_tasks.discard)
-        elif text.startswith('/backtest_m5'):
-            logging.info(f"'/backtest_m5' command recognized for chat_id {chat_id}.")
-            task = asyncio.create_task(run_backtest_m5_async(chat_id))
-            background_tasks.add(task)
-            task.add_done_callback(background_tasks.discard)
-            logging.info(f"Backtest_m5 task for chat_id {chat_id} has been created and stored.")
+        # Команда /backtest_m5 удалена, т.к. убран 5m сетап
         elif text.startswith('/backtest'):
             logging.info(f"'/backtest' command recognized for chat_id {chat_id}.")
             try:
@@ -468,19 +431,8 @@ async def run_check_and_report(chat_id):
         # Устанавливаем таймаут для поиска сигналов
         timeout_seconds = 300
         
-        # Ищем последние сигналы на обоих таймфреймах с таймаутом
-        try:
-            # Создаем задачу для поиска сигнала 5m
-            task_5m = asyncio.create_task(asyncio.to_thread(find_last_signal, timeframe='5m'))
-            # Ждем выполнения с таймаутом
-            last_signal_5m = await asyncio.wait_for(task_5m, timeout=timeout_seconds)
-        except asyncio.TimeoutError:
-            logging.warning(f"Таймаут при поиске сигнала 5m (превышено {timeout_seconds} сек)")
-            last_signal_5m = None
-        except Exception as e:
-            logging.error(f"Ошибка при поиске сигнала 5m: {e}")
-            last_signal_5m = None
-        
+        # Ищем последний сигнал 30m с таймаутом
+        last_signal_30m = None
         try:
             # Создаем задачу для поиска сигнала 30m
             task_30m = asyncio.create_task(asyncio.to_thread(find_last_signal, timeframe='30m'))
@@ -488,33 +440,10 @@ async def run_check_and_report(chat_id):
             last_signal_30m = await asyncio.wait_for(task_30m, timeout=timeout_seconds)
         except asyncio.TimeoutError:
             logging.warning(f"Таймаут при поиске сигнала 30m (превышено {timeout_seconds} сек)")
-            last_signal_30m = None
         except Exception as e:
             logging.error(f"Ошибка при поиске сигнала 30m: {e}")
-            last_signal_30m = None
         
-        # Формируем отчеты для каждого таймфрейма
-        if last_signal_5m:
-            # Форматируем время и цены
-            entry_time = last_signal_5m['time'].strftime('%Y-%m-%d %H:%M:%S')
-            exit_time = last_signal_5m['exit_time'].strftime('%Y-%m-%d %H:%M:%S') if last_signal_5m['exit_time'] else "Не достигнут"
-            
-            report_5m = (
-                f"🔹 **Последний сигнал 5m:**\n"
-                f"   Время входа: {entry_time}\n"
-                f"   Цена входа: {last_signal_5m['entry']:.5f}\n"
-                f"   Стоп-лосс: {last_signal_5m['sl']:.5f}\n"
-                f"   Тейк-профит: {last_signal_5m['tp']:.5f}\n"
-                f"   Статус: {last_signal_5m['status']}\n"
-            )
-            
-            # Добавляем информацию о выходе, если сделка закрыта
-            if "закрыта" in last_signal_5m['status']:
-                report_5m += f"   Время выхода: {exit_time}\n"
-                report_5m += f"   Цена выхода: {last_signal_5m['exit_price']:.5f}\n"
-        else:
-            report_5m = "🔹 **5m:** Сигналов не найдено или превышен таймаут поиска."
-        
+        # Формируем отчет для 30m таймфрейма
         if last_signal_30m:
             # Форматируем время и цены
             entry_time = last_signal_30m['time'].strftime('%Y-%m-%d %H:%M:%S')
@@ -539,111 +468,73 @@ async def run_check_and_report(chat_id):
         # Формируем и отправляем отчет
         report = (
             f"📊 Отчет о последних сигналах:\n\n"
-            f"{report_5m}\n\n"
             f"{report_30m}"
         )
         await bot.send_message(chat_id, report, parse_mode='Markdown')
         
-        # Отправляем картинки для найденных сигналов
-        for signal in [s for s in [last_signal_5m, last_signal_30m] if s]:
-            if signal and signal['plot_path'] and os.path.exists(signal['plot_path']):
-                try:
-                    with open(signal['plot_path'], 'rb') as f:
-                        await bot.send_photo(
-                            chat_id, 
-                            photo=f, 
-                            caption=f"Сигнал {signal['timeframe']} от {signal['time'].strftime('%Y-%m-%d %H:%M:%S')} - {signal['status']}"
-                        )
-                    # Удаляем файл после отправки
-                    os.remove(signal['plot_path'])
-                except Exception as e:
-                    logging.error(f"Ошибка при отправке изображения {signal['plot_path']}: {e}", exc_info=True)
-            elif signal and signal['plot_path']:
-                logging.error(f"Файл изображения {signal['plot_path']} не существует")
-                await bot.send_message(
-                    chat_id,
-                    f"⚠️ Не удалось создать график для сигнала {signal['timeframe']} от {signal['time'].strftime('%Y-%m-%d %H:%M:%S')}"
-                )
+        # Отправляем картинку для найденного сигнала
+        if last_signal_30m and last_signal_30m['plot_path'] and os.path.exists(last_signal_30m['plot_path']):
+            try:
+                with open(last_signal_30m['plot_path'], 'rb') as f:
+                    await bot.send_photo(
+                        chat_id, 
+                        photo=f, 
+                        caption=f"Сигнал {last_signal_30m['timeframe']} от {last_signal_30m['time'].strftime('%Y-%m-%d %H:%M:%S')} - {last_signal_30m['status']}"
+                    )
+                # Удаляем файл после отправки
+                os.remove(last_signal_30m['plot_path'])
+            except Exception as e:
+                logging.error(f"Ошибка при отправке изображения {last_signal_30m['plot_path']}: {e}", exc_info=True)
+        elif last_signal_30m and last_signal_30m['plot_path']:
+            logging.error(f"Файл изображения {last_signal_30m['plot_path']} не существует")
+            await bot.send_message(
+                chat_id,
+                f"⚠️ Не удалось создать график для сигнала {last_signal_30m['timeframe']} от {last_signal_30m['time'].strftime('%Y-%m-%d %H:%M:%S')}"
+            )
 
     except Exception as e:
         logging.error(f"Ошибка при выполнении проверки для chat_id {chat_id}: {e}", exc_info=True)
         await bot.send_message(chat_id, f"❌ Произошла ошибка во время проверки: {e}")
 
 async def generate_and_send_signals():
-    """Генерирует, и если находит, рассылает все типы сигналов подписчикам."""
+    """Генерирует, и если находит, рассылает сигналы подписчикам."""
     try:
         # Ищем сигналы за последние 15 минут (интервал между проверками)
-        signals_5m = find_signals_in_period(minutes=15, timeframe='5m')
         signals_30m = find_signals_in_period(minutes=15, timeframe='30m')
         
         # Если есть сигналы, отправляем их
-        if signals_5m or signals_30m:
+        if signals_30m:
             # Отправляем каждый сигнал отдельно
-            for signal in signals_5m:
-                if signal['time'] is not None and signal['entry'] is not None:
-                    await send_signals(
-                        True, signal['entry'], signal['sl'], signal['tp'], 
-                        signal['time'], signal['plot_path'], signal['timeframe'],
-                        None, None, None, None, None, None, None
-                    )
-            
             for signal in signals_30m:
                 if signal['time'] is not None and signal['entry'] is not None:
                     await send_signals(
-                        None, None, None, None, None, None, None,
                         True, signal['entry'], signal['sl'], signal['tp'], 
                         signal['time'], signal['plot_path'], signal['timeframe']
                     )
         
         # Если сигналов за последние 15 минут не найдено, проверяем текущий сигнал
         # (сохраняем текущее поведение для совместимости)
-        if not signals_5m and not signals_30m:
-            # 5-минутный таймфрейм
-            signal_5m, entry_5m, sl_5m, tp_5m, last_5m, image_path_5m, timeframe_5m, _ = generate_signal_and_plot()
-            
+        if not signals_30m:
             # 30-минутный таймфрейм
             signal_30m, entry_30m, sl_30m, tp_30m, last_30m, image_path_30m, timeframe_30m, _ = generate_signal_and_plot_30m()
 
-            # Если есть хотя бы один сигнал, отправляем
-            if signal_5m or signal_30m:
+            # Если есть сигнал, отправляем
+            if signal_30m:
                 await send_signals(
-                    signal_5m, entry_5m, sl_5m, tp_5m, last_5m, image_path_5m, timeframe_5m,
                     signal_30m, entry_30m, sl_30m, tp_30m, last_30m, image_path_30m, timeframe_30m
                 )
     except Exception as e:
         logging.error(f"Ошибка при генерации и отправке сигналов: {e}", exc_info=True)
 
-async def send_signals(signal_5m, entry_5m, sl_5m, tp_5m, last_5m, image_path_5m, timeframe_5m,
-                       signal_30m, entry_30m, sl_30m, tp_30m, last_30m, image_path_30m, timeframe_30m):
+async def send_signals(signal_30m, entry_30m, sl_30m, tp_30m, last_30m, image_path_30m, timeframe_30m):
     """Асинхронно рассылает сигналы подписчикам."""
     subscribers = get_subscribers()
     if not subscribers:
-        logging.info("Сигнал(ы) есть, но подписчиков нет.")
+        logging.info("Сигнал есть, но подписчиков нет.")
         return
 
     message_parts = []
     images_to_send = []
-
-    if signal_5m:
-        # Корректно определяем время сетапа
-        if last_5m is not None:
-            setup_time_5m = last_5m.name if hasattr(last_5m, 'name') else last_5m
-            try:
-                setup_time_5m_str = setup_time_5m.strftime('%Y-%m-%d %H:%M')
-            except Exception:
-                setup_time_5m_str = str(setup_time_5m)
-        else:
-            setup_time_5m_str = "—"
-        message_5m = (
-            f"🚨 СИГНАЛ НА ПРОДАЖУ (SELL) EUR/USD ({timeframe_5m}) 🚨\n\n"
-            f"Время сетапа (UTC): `{setup_time_5m_str}`\n"
-            f"Вход: {entry_5m:.5f}\n"
-            f"Стоп: {sl_5m:.5f}\n"
-            f"Тейк: {tp_5m:.5f}"
-        )
-        message_parts.append(message_5m)
-        if image_path_5m and os.path.exists(image_path_5m):
-            images_to_send.append(image_path_5m)
 
     if signal_30m:
         # Корректно определяем время сетапа
@@ -669,7 +560,7 @@ async def send_signals(signal_5m, entry_5m, sl_5m, tp_5m, last_5m, image_path_5m
     if not message_parts:
         return
 
-    final_message = "\n\n---\n\n".join(message_parts)
+    final_message = "\n\n".join(message_parts)
 
     for chat_id in subscribers:
         try:
