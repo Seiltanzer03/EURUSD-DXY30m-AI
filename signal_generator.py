@@ -5,7 +5,7 @@ import yfinance as yf
 import joblib
 import ssl
 import matplotlib.pyplot as plt
-from signal_core import generate_signal_and_plot
+from signal_core import generate_signal_and_plot_30m
 
 # Отключение SSL-проверки для yfinance
 try:
@@ -17,17 +17,17 @@ else:
 
 MODEL_FILE = 'ml_model_final_fix.joblib'
 PREDICTION_THRESHOLD = 0.55
-LOOKBACK_PERIOD = 20
+LOOKBACK_PERIOD = 34
 SL_RATIO = 0.004
 TP_RATIO = 0.01
-
+TIMEFRAME_30M = '30m'
 
 def flatten_multiindex_columns(df):
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
     return df
 
-def load_data(period="2d", interval="5m"):
+def load_data(period="7d", interval="30m"):
     eurusd = yf.download('EURUSD=X', period=period, interval=interval, auto_adjust=True)
     dxy = yf.download('DX-Y.NYB', period=period, interval=interval, auto_adjust=True)
     eurusd = flatten_multiindex_columns(eurusd)
@@ -47,42 +47,69 @@ def load_data(period="2d", interval="5m"):
 def get_last_signal():
     data = load_data()
     if len(data) < LOOKBACK_PERIOD:
-        return None, None, None, None
-    last = data.iloc[-1]
-    features = [last['RSI'], last['MACD'], last['MACD_hist'], last['MACD_signal'], last['ATR']]
-    if any(np.isnan(features)):
-        return None, None, None, None
-    model = joblib.load(MODEL_FILE)
-    win_prob = model.predict_proba([features])[0][1]
-    signal = win_prob >= PREDICTION_THRESHOLD
-    entry = last['Open']
-    sl = entry * (1 + SL_RATIO)
-    tp = entry * (1 - TP_RATIO)
-    # Генерация графика, если есть сигнал
-    plot_path = None
-    if signal:
-        plt.figure(figsize=(10, 5))
-        candles = data[-100:]
-        plt.plot(candles.index, candles['Close'], label='Close', color='black')
-        plt.axhline(entry, color='blue', linestyle='--', label='Entry')
-        plt.axhline(sl, color='red', linestyle='--', label='Stop Loss')
-        plt.axhline(tp, color='green', linestyle='--', label='Take Profit')
-        plt.scatter([last.name], [entry], color='blue', marker='v', s=100, label='Sell Entry')
-        plt.legend()
-        plt.title(f'SELL EURUSD ({TIMEFRAME_5M})')
-        plt.tight_layout()
-        plot_path = 'signal.png'
-        plt.savefig(plot_path)
-        plt.close()
-    return signal, entry, sl, tp, last, plot_path
+        return None, None, None, None, None, None
+    
+    last_candle = data.iloc[-2]  # Анализируем предыдущую закрытую свечу
+    current_hour = last_candle.name.hour
+    
+    # Ограничение по времени для 30м сигнала
+    if not (13 <= current_hour <= 17):
+        return None, None, None, None, None, None
+    
+    start_index = len(data) - LOOKBACK_PERIOD - 2
+    end_index = len(data) - 2
+    
+    if start_index < 0 or end_index <= start_index:
+        return None, None, None, None, None, None
+    
+    eurusd_judas_swing = last_candle['High'] > data['High'].iloc[start_index:end_index].max()
+    dxy_raid = last_candle['DXY_Low'] < data['DXY_Low'].iloc[start_index:end_index].min()
+    
+    signal = False
+    entry, sl, tp, plot_path = None, None, None, None
+    
+    if eurusd_judas_swing and dxy_raid:
+        features = [last_candle[col] for col in ['RSI', 'MACD', 'MACD_hist', 'MACD_signal', 'ATR']]
+        if any(np.isnan(features)):
+            return None, None, None, None, None, None
+        
+        model = joblib.load(MODEL_FILE)
+        win_prob = model.predict_proba([features])[0][1]
+        
+        if win_prob >= PREDICTION_THRESHOLD:
+            signal = True
+            entry = last_candle['Open']
+            sl = entry * (1 + SL_RATIO)
+            tp = entry * (1 - TP_RATIO)
+            
+            # Генерация графика, если есть сигнал
+            try:
+                plt.figure(figsize=(10, 5))
+                candles = data[-60:]
+                plt.plot(candles.index, candles['Close'], label='Close', color='black')
+                plt.axhline(entry, color='blue', linestyle='--', label='Entry')
+                plt.axhline(sl, color='red', linestyle='--', label='Stop Loss')
+                plt.axhline(tp, color='green', linestyle='--', label='Take Profit')
+                plt.scatter([last_candle.name], [entry], color='blue', marker='v', s=100, label='Sell Entry')
+                plt.legend()
+                plt.title(f'SELL EURUSD ({TIMEFRAME_30M})')
+                plt.tight_layout()
+                plot_path = 'signal_30m.png'
+                plt.savefig(plot_path)
+                plt.close()
+            except Exception as e:
+                print(f"Ошибка при создании графика: {e}")
+                plot_path = None
+    
+    return signal, entry, sl, tp, last_candle, plot_path
 
 if __name__ == "__main__":
-    signal, entry, sl, tp, last, plot_path = generate_signal_and_plot()
+    signal, entry, sl, tp, last_candle, plot_path, timeframe, status = generate_signal_and_plot_30m()
     if signal is None:
         print("Нет сигнала (недостаточно данных или NaN)")
     elif signal:
-        print(f"СИГНАЛ: SELL EURUSD ({TIMEFRAME_5M})\nВремя: {last.name}\nEntry: {entry:.5f}\nStop Loss: {sl:.5f}\nTake Profit: {tp:.5f}")
+        print(f"СИГНАЛ: SELL EURUSD ({timeframe})\nВремя: {last_candle.name}\nEntry: {entry:.5f}\nStop Loss: {sl:.5f}\nTake Profit: {tp:.5f}")
         if plot_path:
             print(f"GRAPH_PATH: {plot_path}")
     else:
-        print(f"Нет сигнала | Время: {last.name}") 
+        print(f"Нет сигнала | Время: {last_candle.name if last_candle is not None else 'N/A'}") 
